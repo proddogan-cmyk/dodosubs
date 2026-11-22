@@ -51,8 +51,8 @@ final class StreamWindowController: NSObject, NSWindowDelegate {
         return window
     }
 
-    /// Yayın programının pencere listesinde görünen ad; altyazıya göre değişmez (Türkçede "CouchSubs Yayın").
-    static var title: String { String(localized: "CouchSubs Stream") }
+    /// Yayın programının pencere listesinde görünen ad; altyazıya göre değişmez.
+    static var title: String { "DodoSubs Yayın" }
 
     func windowWillClose(_ notification: Notification) {
         model?.streamWindowOpen = false

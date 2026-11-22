@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import AppKit
 import CouchSubsCore
 import RemotePlay
 import SwiftUI
 
-/// Ana ekran: solda başlat/durdur, durum karoları ve uyarılar; sağda paket notu ve canlı altyazı.
-/// Sütunlar hiçbir genişlikte üst üste binmez: sol sütun en çok `mainColumn`, sağ sütun en az `liveColumnMin`
-/// genişliğindedir; ikisi sığmazsa (pencere sistem tarafından daraltıldıysa) sütunlar alt alta dizilir.
+/// DodoSubs Ana Stüdyo Ekranı: üstte Liquid Glass komut çubuğu, solda kontrol güvertesi ve durum karoları,
+/// sağda isteğe bağlı canlı PS5 monitörü, telemetri şeridi ve sinematik canlı altyazı sahnesi.
 struct MainView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var showLiveMonitor = false
 
     /// Sol sütunun en dar hâli (iki durum karosu yan yana okunur kalır).
     static let controlsColumnMin: CGFloat = 340
@@ -17,7 +18,7 @@ struct MainView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.space("gap")) {
-            MainHeader()
+            MainHeader(showLiveMonitor: $showLiveMonitor)
             GeometryReader { geometry in
                 let gap = Theme.space("gap")
                 let available = geometry.size.width
@@ -25,7 +26,13 @@ struct MainView: View {
                     HStack(alignment: .top, spacing: gap) {
                         ControlsColumn(width: min(Theme.size("mainColumn"), available - gap - Self.liveColumnMin))
                         VStack(alignment: .leading, spacing: gap) {
-                            if model.demoMode { DemoFrameTile(preview: model.framePreview) }
+                            if model.demoMode {
+                                DemoFrameTile(preview: model.framePreview)
+                            } else if showLiveMonitor && model.isRunning {
+                                LiveStreamMonitorTile(preview: model.framePreview) {
+                                    withAnimation(.easeOut(duration: 0.2)) { showLiveMonitor = false }
+                                }
+                            }
                             PackInUseTile()
                             LiveSubtitlesTile()
                         }
@@ -35,7 +42,13 @@ struct MainView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: gap) {
                             MainControls()
-                            if model.demoMode { DemoFrameTile(preview: model.framePreview) }
+                            if model.demoMode {
+                                DemoFrameTile(preview: model.framePreview)
+                            } else if showLiveMonitor && model.isRunning {
+                                LiveStreamMonitorTile(preview: model.framePreview) {
+                                    withAnimation(.easeOut(duration: 0.2)) { showLiveMonitor = false }
+                                }
+                            }
                             PackInUseTile()
                             LiveSubtitlesTile().frame(minHeight: Self.liveColumnMin)
                         }
@@ -55,34 +68,148 @@ struct MainView: View {
     }
 }
 
-/// Logo, ad, geçmiş ve ayarlar düğmeleri.
+/// Üst Liquid Glass stüdyo komut çubuğu: DS logosu, DodoSubs adı, canlı durum rozeti ve hızlı stüdyo düğmeleri.
 private struct MainHeader: View {
     @EnvironmentObject private var model: AppModel
+    @Binding var showLiveMonitor: Bool
 
     var body: some View {
         HStack(spacing: Theme.space("m")) {
-            LogoView(size: 36)
-            Text(verbatim: "CouchSubs").font(.csTitle)
+            LogoView(size: 38)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    Text(verbatim: "DodoSubs").font(.csTitle)
+                    Text(verbatim: "STUDIO")
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(1.1)
+                        .foregroundStyle(Color.csAccentText)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.csAccentSoft.opacity(0.9), in: Capsule())
+                        .overlay(Capsule().strokeBorder(Color.csAccent.opacity(0.28), lineWidth: 1))
+                }
+                HStack(spacing: 6) {
+                    if model.isRunning {
+                        LiveDot(color: .csSuccess)
+                        Text(verbatim: liveRouteLabel)
+                            .font(.csCaption)
+                            .foregroundStyle(Color.csSecondary)
+                    } else {
+                        StatusDot(color: .csSecondary.opacity(0.6))
+                        Text("Hazır")
+                            .font(.csCaption)
+                            .foregroundStyle(Color.csSecondary)
+                    }
+                }
+            }
             Spacer()
-            Button { model.showHistory = true } label: {
-                Label("History", systemImage: "clock.arrow.circlepath")
+            HStack(spacing: Theme.space("s")) {
+                if !model.demoMode {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) { showLiveMonitor.toggle() }
+                    } label: {
+                        Image(systemName: showLiveMonitor ? "eye.fill" : "eye")
+                            .foregroundStyle(showLiveMonitor && model.isRunning ? Color.csAccentText : Color.csText)
+                    }
+                    .buttonStyle(.secondary)
+                    .disabled(!model.isRunning)
+                    .help(Text("Canlı PS5 akış önizlemesini aç/kapat"))
+                    .accessibilityLabel(Text("Canlı önizleme"))
+                }
+                Button { model.translateScreen() } label: {
+                    Image(systemName: "text.viewfinder")
+                }
+                .buttonStyle(.secondary)
+                .disabled(!model.isRunning)
+                .help(Text("Ekranı şimdi çevir (⌥⌘T)"))
+                .accessibilityLabel(Text("Translate screen"))
+                Button { model.showHistory = true } label: {
+                    HStack(spacing: 6) {
+                        Label("History", systemImage: "clock.arrow.circlepath")
+                        if !model.history.entries.isEmpty {
+                            Text(verbatim: "\(model.history.entries.count)")
+                                .font(.csCaption.monospacedDigit())
+                                .foregroundStyle(Color.csSecondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Color.csBackground.opacity(0.55), in: Capsule())
+                        }
+                    }
+                }
+                .buttonStyle(.secondary)
+                .help(Text("History"))
+                Button { model.showSettings = true } label: {
+                    Label("Settings", systemImage: "gearshape")
+                }
+                .buttonStyle(.secondary)
+                .help(Text("Settings"))
             }
-            .buttonStyle(.secondary)
-            .help(Text("History"))
-            Button { model.showSettings = true } label: {
-                Label("Settings", systemImage: "gearshape")
-            }
-            .buttonStyle(.secondary)
-            .help(Text("Settings"))
         }
+        .padding(.horizontal, Theme.space("tile"))
+        .padding(.vertical, Theme.space("m"))
+        .tile(padding: 0)
+    }
+
+    private var liveRouteLabel: String {
+        let source = model.demoMode ? "Demo" : (model.console?.name.isEmpty == false ? model.console!.name : "PS5")
+        let dest = switch model.settings.output {
+        case .tv: model.tv?.name.isEmpty == false ? model.tv!.name : "TV"
+        case .computer: "Mac"
+        case .both: "TV + Mac"
+        }
+        return "\(source) → \(dest)"
     }
 }
 
-/// Sol sütun, kendi genişliğinde kayan. İçerik genişliği sabitlenir: dikey `ScrollView` içeriğine her düzen
-/// geçişinde kendi genişliğini önermez; pencere içerik boyuna göre yeniden ölçülünce (Ayarlar sayfası açılıp
-/// kapanınca) içerik "ideal" genişliğinde, yazılar tek satırda ölçülebiliyor. `MainControls`'ün ideal genişliği
-/// sütundan geniştir (456–681 pt); sabitlenmezse karolar sütundan taşıp ortalanır: sol kenar boşluğu daralır,
-/// sağda karolar sağ sütuna dayanır ve kenarları kesilir.
+/// İsteğe bağlı canlı PS5 akış monitörü (yalnız göz simgesi açılınca çizilir; kapalıyken sıfır ek yük).
+private struct LiveStreamMonitorTile: View {
+    @ObservedObject var preview: FramePreview
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.space("s")) {
+            HStack(spacing: 8) {
+                LiveDot(color: .csAccent)
+                Text("Canlı PS5 Monitörü")
+                    .font(.csCaption.weight(.semibold))
+                    .foregroundStyle(Color.csText)
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.csSecondary)
+                        .frame(width: 22, height: 22)
+                        .background(Color.csSurface2.opacity(0.8), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help(Text("Önizlemeyi kapat"))
+            }
+            Group {
+                if let image = preview.image {
+                    Image(decorative: image, scale: 1)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                } else {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: Theme.radius("inner"), style: .continuous)
+                            .fill(Color.csBackground.opacity(0.75))
+                        ProgressView().controlSize(.small)
+                    }
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: 200)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.radius("inner"), style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radius("inner"), style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+            )
+        }
+        .tile(padding: Theme.space("m"))
+    }
+}
+
+/// Sol sütun, kendi genişliğinde kayan. İçerik genişliği sabitlenir ki dar/geniş geçişlerde taşmasın.
 struct ControlsColumn: View {
     let width: CGFloat
 
@@ -98,7 +225,7 @@ struct ControlsColumn: View {
     }
 }
 
-/// Sol sütun: başlat/durdur, PS5 ve TV, altyazının yeri, çeviri motoru ve kısayol (bilgi karosu), uyarılar.
+/// Sol kontrol güvertesi: başlat/durdur, PS5 ve TV cam durum karoları, oyun/alanlar, çıktı ve hızlı ayarlar.
 struct MainControls: View {
     @EnvironmentObject private var model: AppModel
 
@@ -113,7 +240,8 @@ struct MainControls: View {
                     StatusTile(symbol: "play.rectangle", title: "Demo mode", value: model.ps5StatusText,
                                tone: AppModel.ps5Tone(model.sessionState, running: model.isRunning))
                 } else {
-                    StatusTile(symbol: "gamecontroller", title: "PS5", value: model.ps5StatusText,
+                    StatusTile(symbol: "gamecontroller.fill", title: "PS5", value: model.ps5StatusText,
+                               subtitle: model.console?.name,
                                tone: AppModel.ps5Tone(model.sessionState, running: model.isRunning))
                 }
                 // Altyazı yalnız bilgisayar ekranındaysa TV durumu gösterilmez.
@@ -124,12 +252,12 @@ struct MainControls: View {
             // Kurulum bitmeden de uygulama örnek görüntülerle denenebilir.
             if !model.canStart && !model.isRunning && !model.demoMode { DemoModeButton(kind: .ghost) }
             SubtitleOutputCard()
-            // Ayar bilgisi durum karosu gibi değil, satır olarak durur (TASARIM.md › InfoCard).
             InfoCard {
-                // Görüntünün nereden okunduğu; dokununca Ayarlar › Görüntü kaynağı (DM'de ayar bulunamıyordu).
                 InfoRow("Picture source", value: pictureSourceName, action: { model.openSettings(.source) })
                 InfoDivider()
                 InfoRow("Translation", value: engineName, action: { model.openSettings(.translation) })
+                InfoDivider()
+                InfoRow("Subtitle area", value: areasSummary, action: { model.openSettings(.area) })
                 InfoDivider()
                 InfoRow("Translate screen") { Keycap("⌥⌘T") }
             }
@@ -145,6 +273,11 @@ struct MainControls: View {
     private var engineName: String {
         let engine = model.settings.translationEngine
         return engine == .free ? String(localized: "Free") : engine.displayName
+    }
+
+    private var areasSummary: String {
+        let extra = model.settings.extraAreas.count
+        return extra > 0 ? "Altyazı + \(extra) ek alan" : "Altyazı"
     }
 }
 
@@ -202,8 +335,8 @@ private struct TVStatusTile: View {
     var body: some View {
         if model.hasTV {
             if model.canReinstallTVApp {
-                // TV uygulaması bağlanmıyor (ör. TV'den kaldırıldı): TV adımı açılır, uygulama yeniden kurulur ya da açılır.
-                StatusTile(symbol: "tv", title: "TV", value: String(localized: "Waiting for the TV app"),
+                StatusTile(symbol: "tv.fill", title: "TV", value: String(localized: "Waiting for the TV app"),
+                           subtitle: model.tv?.name,
                            tone: AppModel.tvTone(clients: model.tvClients, running: model.isRunning)) {
                     Button("Reinstall the TV app") {
                         model.step = .tv
@@ -211,9 +344,23 @@ private struct TVStatusTile: View {
                     }.buttonStyle(.secondary)
                 }
             } else {
-                StatusTile(symbol: "tv", title: "TV",
+                StatusTile(symbol: "tv.fill", title: "TV",
                            value: model.tvClients > 0 ? String(localized: "Connected") : String(localized: "Waiting for the TV app"),
-                           tone: AppModel.tvTone(clients: model.tvClients, running: model.isRunning))
+                           subtitle: model.tv?.name,
+                           tone: AppModel.tvTone(clients: model.tvClients, running: model.isRunning)) {
+                    if model.isRunning && model.tv?.brand == .lg && model.tvClients > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.shield.fill")
+                                .font(.system(size: 10.5, weight: .semibold))
+                            Text(verbatim: "OLED Kalkanı")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundStyle(Color.csSuccess)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color.csSuccessSoft.opacity(0.85), in: Capsule())
+                    }
+                }
             }
         } else {
             StatusTile(symbol: "tv", title: "TV", value: String(localized: "Not set up")) {
@@ -297,45 +444,87 @@ private struct PackInUseTile: View {
     var body: some View {
         if active {
             HStack(spacing: Theme.space("m")) {
-                TileIcon(symbol: "shippingbox", tint: .csPro)
+                Image(systemName: "shippingbox.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.csPro)
+                    .frame(width: 26, height: 26)
+                    .background(Color.csProSoft.opacity(0.9), in: RoundedRectangle(cornerRadius: Theme.radius("tag"), style: .continuous))
                 Text(verbatim: String(format: String(localized: "Game packs are on · %lld games translated in advance"), model.installedPacks.count))
                     .font(.csBody)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .tile()
+            .tile(padding: Theme.space("m"))
         }
     }
 }
 
-/// Son altyazı büyük ve altyazı sarısında, öncekiler altında daha küçük (özgün metinleri ikincil renkte); çeviri sürerken
-/// sağ üstte canlı nokta.
+/// Sağ sütun: Sinematik canlı altyazı sahnesi, Liquid Glass telemetri çipleri ve akıcı oturum geçmişi.
 private struct LiveSubtitlesTile: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.space("gap")) {
-            HStack {
+        VStack(alignment: .leading, spacing: Theme.space("m")) {
+            HStack(spacing: Theme.space("s")) {
                 Text("Live subtitles").font(.csHeadline)
+                if !model.sessionHistory.isEmpty {
+                    Pill(text: "\(model.sessionHistory.count) satır")
+                }
                 Spacer()
                 if model.isRunning { Pill(text: String(localized: "Translating…"), live: true) }
             }
             if model.lastTranslation.isEmpty {
-                HintText(text: "Subtitles will appear here while you play.")
-                // Çeviri PS5'ten (ikinci hesap) okunurken: kolu açınca ana hesap seçilmeli (GitHub #231).
-                if model.isRunning && model.settings.frameSource == .ps5 && !model.demoMode {
-                    HintText(text: "When you turn on the controller to play, choose your MAIN account on the PS5. Don't play with the second account CouchSubs signs in with, or the controller won't work in the game.")
+                VStack(spacing: Theme.space("m")) {
+                    Spacer(minLength: 24)
+                    Image(systemName: model.isRunning ? "waveform.and.magnifyingglass" : "captions.bubble")
+                        .font(.system(size: 28, weight: .medium))
+                        .foregroundStyle(model.isRunning ? Color.csAccentText : Color.csSecondary)
+                        .frame(width: 60, height: 60)
+                        .background(
+                            Circle()
+                                .fill(model.isRunning ? Color.csAccentSoft.opacity(0.75) : Color.csSurface2.opacity(0.75))
+                        )
+                        .overlay(
+                            Circle()
+                                .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+                        )
+                    VStack(spacing: 6) {
+                        Text(model.isRunning ? "Altyazılar dinleniyor…" : "Subtitles will appear here while you play.")
+                            .font(.csHeadline)
+                            .foregroundStyle(Color.csText)
+                            .multilineTextAlignment(.center)
+                        if model.isRunning && model.settings.frameSource == .ps5 && !model.demoMode {
+                            HintText(text: "When you turn on the controller to play, choose your MAIN account on the PS5. Don't play with the second account CouchSubs signs in with, or the controller won't work in the game.")
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 420)
+                        } else {
+                            Text("Başlat'a bastığınızda çevrilen her replik ve gecikme ölçümü burada canlı akacak.")
+                                .font(.csCallout)
+                                .foregroundStyle(Color.csSecondary)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 380)
+                        }
+                    }
+                    Spacer(minLength: 24)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                // Yeni satır kısa bir geçişle belirir (azaltılmış harekette geçiş yok); eskisiyle üst üste biner, karo zıplamaz.
+                // Hero sinematik altyazı sahnesi: yumuşak yukarı kayma + cam vurgusu
                 ZStack(alignment: .topLeading) {
                     CurrentLine(translation: model.lastTranslation, source: model.lastSource)
                         .id(model.lastTranslation)
-                        .transition(.opacity)
+                        .transition(
+                            reduceMotion
+                                ? .opacity
+                                : .asymmetric(
+                                    insertion: .opacity.combined(with: .offset(y: 10)),
+                                    removal: .opacity
+                                )
+                        )
                 }
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: model.lastTranslation)
+                .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86), value: model.lastTranslation)
                 if let metrics = model.lastMetrics { MetricsRow(metrics: metrics) }
                 SubtitleHistoryList()
             }
@@ -346,39 +535,109 @@ private struct LiveSubtitlesTile: View {
     }
 }
 
+/// Öne çıkan son çeviri sahnesi: sol safir cam şeridi, net tipografi ve tek tık kopyalama.
 private struct CurrentLine: View {
     let translation: String
     let source: String
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var copied = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.space("hair")) {
-            Text(verbatim: translation)
-                // Altyazı içeriği: 28 pt yarı kalın (`display` ile aynı boy), altyazı sarısında.
-                .font(.csDisplay)
-                .foregroundStyle(Color.csAccentText)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(verbatim: source)
-                .font(.csCaption)
-                .foregroundStyle(Color.csSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+        let shape = RoundedRectangle(cornerRadius: Theme.radius("control"), style: .continuous)
+        HStack(alignment: .top, spacing: Theme.space("m")) {
+            Capsule()
+                .fill(LinearGradient(colors: [Color.csAccentHi, Color.csAccent], startPoint: .top, endPoint: .bottom))
+                .frame(width: 3.5)
+                .padding(.vertical, 2)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(verbatim: translation)
+                    .font(.csDisplay)
+                    .foregroundStyle(Color.csText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(verbatim: source)
+                    .font(.csCaption)
+                    .foregroundStyle(Color.csSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .textSelection(.enabled)
+            Spacer(minLength: 4)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("\(translation)\n\(source)", forType: .string)
+                copied = true
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(copied ? Color.csSuccess : Color.csSecondary)
+                    .frame(width: 28, height: 28)
+                    .background(Color.csSurface2.opacity(0.75), in: RoundedRectangle(cornerRadius: Theme.radius("inner"), style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help(Text(copied ? "Copied" : "Copy"))
+            .resetsAfterDelay($copied)
         }
-        .textSelection(.enabled)
+        .padding(Theme.space("l"))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            shape.fill(colorScheme == .dark ? Color.csBackground.opacity(0.58) : Color.csSurface2.opacity(0.55))
+        )
+        .overlay(
+            shape.strokeBorder(
+                LinearGradient(
+                    colors: [Color.csAccent.opacity(0.32), Color.csBorder.opacity(0.45)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: 1
+            )
+        )
     }
 }
 
-/// Son satırın ölçümleri: yazı tanıma, çeviri, karenin gelişinden TV'ye kadar gecikme ve tanıma güveni.
-/// Küçük ve sessiz (13 pt, ikincil renk, sabit genişlikte rakamlar).
+/// Son satırın ölçümleri: Apple Pro Liquid Glass telemetri çipleri (kaynak, OCR, çeviri, toplam gecikme, güven).
 struct MetricsRow: View {
     let metrics: LineMetrics
 
     var body: some View {
-        Text(verbatim: metrics.summary)
-            .font(.csCaption.monospacedDigit())
-            .foregroundStyle(Color.csSecondary)
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            .accessibilityLabel(Text("Measurements"))
-            .accessibilityValue(Text(verbatim: metrics.summary))
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                if metrics.origin == .pack {
+                    TelemetryChip(icon: "shippingbox.fill", label: String(localized: "Pack"), tint: .csPro, softFill: .csProSoft)
+                } else {
+                    TelemetryChip(icon: "sparkles", label: String(localized: "Translation engine"), tint: .csAccentText, softFill: .csAccentSoft)
+                }
+                if let ocr = metrics.ocrMs {
+                    TelemetryChip(icon: "eye", label: "OCR \(ocr) ms")
+                }
+                if let tr = metrics.translationMs {
+                    TelemetryChip(icon: "globe", label: "Çeviri \(tr) ms")
+                }
+                TelemetryChip(
+                    icon: "bolt.fill",
+                    label: "\(metrics.totalMs) ms",
+                    tint: latencyColor,
+                    softFill: latencySoftFill
+                )
+                if let conf = metrics.confidence {
+                    TelemetryChip(icon: "checkmark.seal", label: "%\(conf)")
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("Measurements"))
+        .accessibilityValue(Text(verbatim: metrics.summary))
+    }
+
+    private var latencyColor: Color {
+        if metrics.totalMs <= 350 { return .csSuccess }
+        if metrics.totalMs <= 800 { return .csAccentText }
+        return .csWarning
+    }
+
+    private var latencySoftFill: Color {
+        if metrics.totalMs <= 350 { return .csSuccessSoft }
+        if metrics.totalMs <= 800 { return .csAccentSoft }
+        return .csSurface2
     }
 }
 
@@ -390,12 +649,9 @@ private struct SubtitleHistoryList: View {
         let entries = Array(model.sessionHistory.dropFirst())
         if !entries.isEmpty {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: Theme.space("m")) {
+                LazyVStack(alignment: .leading, spacing: Theme.space("s")) {
                     ForEach(entries, id: \.id) { entry in
-                        VStack(alignment: .leading, spacing: Theme.space("m")) {
-                            Divider().overlay(Color.csBorder)
-                            HistoryRow(entry: entry)
-                        }
+                        HistoryRow(entry: entry)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -408,19 +664,54 @@ private struct SubtitleHistoryList: View {
 
 private struct HistoryRow: View {
     let entry: SubtitleHistory.Entry
+    @State private var copied = false
+    @State private var hovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.space("hair")) {
-            // Önceki çeviri 17 pt ikincil renkte, özgün metin küçük (docs/TASARIM.md › Yazı); canlı satır tek vurgu kalır.
-            Text(verbatim: entry.translation)
-                .font(.csHeadline.weight(.regular))
-                .foregroundStyle(Color.csSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(verbatim: entry.source)
-                .font(.csCaption)
-                .foregroundStyle(Color.csSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .top, spacing: Theme.space("s")) {
+            Circle()
+                .fill(entry.origin == .pack ? Color.csPro : Color.csAccentText)
+                .frame(width: 6, height: 6)
+                .padding(.top, 7)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: entry.translation)
+                    .font(.csBody.weight(.medium))
+                    .foregroundStyle(Color.csText.opacity(0.84))
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    Text(verbatim: entry.date.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(Color.csSecondary.opacity(0.8))
+                    Text(verbatim: "·")
+                        .foregroundStyle(Color.csSecondary.opacity(0.6))
+                    Text(verbatim: entry.source)
+                        .font(.csCaption)
+                        .foregroundStyle(Color.csSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .textSelection(.enabled)
+            Spacer(minLength: 4)
+            if hovering || copied {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("\(entry.translation)\n\(entry.source)", forType: .string)
+                    copied = true
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(copied ? Color.csSuccess : Color.csSecondary)
+                }
+                .buttonStyle(.plain)
+                .resetsAfterDelay($copied)
+            }
         }
-        .textSelection(.enabled)
+        .padding(.horizontal, Theme.space("m"))
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radius("inner"), style: .continuous)
+                .fill(hovering ? Color.csSurface2.opacity(0.65) : Color.csSurface2.opacity(0.32))
+        )
+        .onHover { hovering = $0 }
     }
 }

@@ -4,7 +4,10 @@ import Foundation
 
 /// Uygulamanın adı ve kimlikleri tek yerde.
 public enum AppIdentity {
+    /// Veri/önbellek klasör adı (mevcut ayarlar, çeviri önbelleği ve geçmiş korunur).
     public static let name = "CouchSubs"
+    /// Kullanıcının gördüğü uygulama adı.
+    public static let displayName = "DodoSubs"
     public static let tvAppId = "com.couchsubs.tv"
     public static let samsungAppId = "CouchSubsT.CouchSubs"
     public static let tvGuideURL = URL(string: "https://github.com/yorulmazsinan/couchsubs/blob/main/docs/tv-kurulum.md")!

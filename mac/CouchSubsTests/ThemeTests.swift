@@ -19,7 +19,7 @@ final class ThemeTests: XCTestCase {
     }
 
     func testTokensAreBundledWithTheApp() {
-        XCTAssertEqual(tokens.name, "CouchSubs")
+        XCTAssertEqual(tokens.name, "DodoSubs")
         for (name, pair) in tokens.color {
             XCTAssertNotNil(DesignTokens.rgb(pair.light), name)
             XCTAssertNotNil(DesignTokens.rgb(pair.dark), name)

@@ -21,7 +21,7 @@ enum SettingsSection: CaseIterable, Identifiable {
         case .obs: "OBS overlay"
         case .source: "Picture source"
         case .ps5: "PS5 login passcode"
-        case .about: "About CouchSubs"
+        case .about: "DodoSubs Hakkında"
         }
     }
 
@@ -72,16 +72,21 @@ struct SettingsView: View {
     }
 }
 
-/// Bölüm listesi: seçili satır yüzey-2 zeminli ve yarı kalın (sarı değil).
+/// Bölüm listesi: üstte DodoSubs stüdyo başlığı, seçili satırda safir Liquid Glass vurgusu.
 private struct SettingsSidebar: View {
     @Binding var section: SettingsSection
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.space("xs")) {
-            Text("Settings")
-                .font(.csTitle)
-                .padding(.horizontal, Theme.space("m"))
-                .padding(.bottom, Theme.space("s"))
+            HStack(spacing: Theme.space("s")) {
+                LogoView(size: 28)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Settings").font(.csHeadline)
+                    Text(verbatim: "DodoSubs").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.csSecondary)
+                }
+            }
+            .padding(.horizontal, Theme.space("m"))
+            .padding(.vertical, Theme.space("s"))
             ForEach(SettingsSection.allCases) { item in
                 SidebarRow(title: item.title, symbol: item.symbol, selected: item == section) { section = item }
             }
@@ -93,8 +98,7 @@ private struct SettingsSidebar: View {
     }
 }
 
-/// Kenar çubuğundaki bir satır (ayarlar bölümü ya da kurulum adımı): seçiliyken yüzey-2 zemin ve yarı kalın yazı,
-/// üzerine gelince de yüzey-2 zemin.
+/// Kenar çubuğundaki bir satır: seçiliyken safir Liquid Glass zemin ve sol vurgu şeridi.
 struct SidebarRow: View {
     let title: LocalizedStringKey
     let symbol: String
@@ -102,19 +106,26 @@ struct SidebarRow: View {
     let action: () -> Void
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.radius("control"), style: .continuous)
         Button(action: action) {
             HStack(spacing: Theme.space("m")) {
+                Capsule()
+                    .fill(selected ? Color.csAccent : Color.clear)
+                    .frame(width: 3, height: 18)
                 Image(systemName: symbol)
-                    .frame(width: 20)
-                    .foregroundStyle(selected ? Color.csText : Color.csSecondary)
+                    .frame(width: 18)
+                    .foregroundStyle(selected ? Color.csAccentText : Color.csSecondary)
                 Text(title)
                     .font(selected ? .csBody.weight(.semibold) : .csBody)
                     .foregroundStyle(Color.csText)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, Theme.space("m"))
+            .padding(.horizontal, Theme.space("s"))
             .frame(minHeight: Theme.size("rowHeight"))
-            .background(selected ? Color.csSurface2 : Color.clear, in: RoundedRectangle(cornerRadius: Theme.radius("control"), style: .continuous))
+            .background(selected ? Color.csAccentSoft.opacity(0.75) : Color.clear, in: shape)
+            .overlay(
+                shape.strokeBorder(selected ? Color.csAccent.opacity(0.28) : Color.clear, lineWidth: 1)
+            )
         }
         .buttonStyle(RowButtonStyle(radius: "control"))
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -913,7 +924,7 @@ private struct AboutCard: View {
     var body: some View {
         Card {
             HStack(spacing: Theme.space("m")) {
-                Button("About CouchSubs") { model.showAbout = true }.buttonStyle(.secondary)
+                Button("DodoSubs Hakkında") { model.showAbout = true }.buttonStyle(.secondary)
                 Spacer()
                 Button("Set up again…") { confirmReset = true }.buttonStyle(.danger)
             }

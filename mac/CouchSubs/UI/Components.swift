@@ -5,28 +5,36 @@ import SwiftUI
 // Ortak bileşenler. Ölçü ve renkler Theme'den (design/tokens.json) gelir; ekranlar sabit değer kullanmaz.
 // Bileşenlerin tarifi docs/TASARIM.md'de; Windows sürümü aynı bileşenleri aynı adlarla kurar.
 
-/// Uygulamanın logosu (kanepe + altyazı).
+/// Uygulamanın logosu (DodoSubs minimalist DS monogramı + iki altyazı çizgisi).
 struct LogoView: View {
     var size: CGFloat = 40
 
     var body: some View {
         // Simge dosyası macOS ızgarasına göre kenar boşluğu içerir (1024'te 824'lük kare); uygulama içinde kırpılır.
+        let radius = size * 186 / 824
         Image("Logo")
             .resizable()
             .interpolation(.high)
             .frame(width: size * 1024 / 824, height: size * 1024 / 824)
             .frame(width: size, height: size)
-            .clipped()
-            // Koyu temada logonun kenarı zeminden ayrılsın.
-            .overlay(RoundedRectangle(cornerRadius: size * 186 / 824, style: .continuous).strokeBorder(Color.csBorder))
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [.white.opacity(0.32), Color.csAccent.opacity(0.24)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(color: Color.black.opacity(0.22), radius: size * 0.16, y: size * 0.08)
             .accessibilityHidden(true)
     }
 }
 
-/// Düğme türleri: birincil (düz sarı), ikincil (yüzey-2, çerçeveli), tehlikeli (kırmızı tonlu, çerçevesiz), hayalet (yalnız yazı).
-/// Gölge ve parıltı yok. Üzerine gelince birincil biraz açık sarı, ikincil çerçeve rengi, tehlikeli çerçeveli, hayalet yüzey-2
-/// zeminli; basılıyken %97 ölçek; klavye odağında 2 pt sarı yazı rengi çerçeve. Devre dışı birincil yüzey-2 zemin ve ikincil
-/// yazı (soldurulmuş sarı yok), öbürleri %40 saydamlık.
+/// Düğme türleri: Liquid Glass birincil (safir/buz mavisi cam), ikincil (buzlu cam), tehlikeli (kırmızı cam), hayalet.
 struct CSButtonStyle: ButtonStyle {
     enum Kind { case primary, secondary, danger, ghost }
     var kind: Kind = .secondary
@@ -39,7 +47,7 @@ struct CSButtonStyle: ButtonStyle {
     }
 }
 
-/// Düğmenin görünümü. Üzerine gelme ve odak durumu ayrı görünümde tutulur (ButtonStyle kendi durumunu tutamaz).
+/// Düğmenin Liquid Glass görünümü. Üzerine gelme ve odak durumu ayrı görünümde tutulur.
 private struct CSButtonBody: View {
     let configuration: ButtonStyleConfiguration
     let kind: CSButtonStyle.Kind
@@ -47,6 +55,7 @@ private struct CSButtonBody: View {
     let height: String
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.colorScheme) private var colorScheme
     @State private var hovering = false
 
     var body: some View {
@@ -58,24 +67,95 @@ private struct CSButtonBody: View {
             .foregroundStyle(foreground)
             .padding(.horizontal, kind == .ghost ? Theme.space("m") : Theme.space("tile"))
             .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: Theme.size(height))
-            .background(background(pressed: pressed, hovered: hovered), in: shape)
+            .background { backgroundView(shape: shape, pressed: pressed, hovered: hovered) }
             .overlay { border(shape, hovered: hovered) }
             .overlay {
                 if isFocused { shape.strokeBorder(Color.csAccentText, lineWidth: 2) }
             }
-            .scaleEffect(pressed ? 0.97 : 1)
-            .opacity(isEnabled || kind == .primary ? 1 : 0.4)
+            .shadow(color: shadowColor(hovered: hovered), radius: hovered ? 12 : 8, y: 4)
+            .scaleEffect(pressed ? 0.975 : 1)
+            .opacity(isEnabled || kind == .primary ? 1 : 0.42)
             .contentShape(shape)
             .onHover { hovering = $0 }
-            .animation(.easeOut(duration: 0.12), value: pressed)
-            .animation(.easeOut(duration: 0.12), value: hovered)
+            .animation(.easeOut(duration: 0.14), value: pressed)
+            .animation(.easeOut(duration: 0.14), value: hovered)
+    }
+
+    @ViewBuilder private func backgroundView(shape: RoundedRectangle, pressed: Bool, hovered: Bool) -> some View {
+        switch kind {
+        case .primary:
+            if !isEnabled {
+                shape.fill(Color.csSurface2)
+            } else {
+                ZStack {
+                    shape.fill(
+                        LinearGradient(
+                            colors: pressed || hovered
+                                ? [Color.csAccentHi, Color.csAccent]
+                                : [Color.csAccentHi.opacity(0.92), Color.csAccent],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    shape.fill(
+                        LinearGradient(
+                            colors: [.white.opacity(colorScheme == .dark ? 0.28 : 0.22), .clear],
+                            startPoint: .top,
+                            endPoint: .center
+                        )
+                    )
+                }
+            }
+        case .secondary:
+            ZStack {
+                shape.fill(.thinMaterial)
+                shape.fill(hovered ? Color.csSurface2.opacity(0.92) : Color.csSurface2.opacity(colorScheme == .dark ? 0.62 : 0.72))
+            }
+        case .danger:
+            ZStack {
+                shape.fill(.ultraThinMaterial)
+                shape.fill(Color.csDangerSoft.opacity(hovered ? 0.95 : 0.84))
+            }
+        case .ghost:
+            shape.fill(hovered ? Color.csSurface2.opacity(0.75) : Color.clear)
+        }
     }
 
     @ViewBuilder private func border(_ shape: RoundedRectangle, hovered: Bool) -> some View {
         switch kind {
-        case .secondary: shape.strokeBorder(Color.csBorder)
-        case .danger: if hovered { shape.strokeBorder(Color.csDangerBorder) }
-        case .primary, .ghost: EmptyView()
+        case .primary:
+            if isEnabled {
+                shape.strokeBorder(
+                    LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0.08)], startPoint: .top, endPoint: .bottom),
+                    lineWidth: 1
+                )
+            }
+        case .secondary:
+            shape.strokeBorder(
+                LinearGradient(
+                    colors: [
+                        .white.opacity(colorScheme == .dark ? (hovered ? 0.28 : 0.18) : 0.75),
+                        Color.csBorder.opacity(hovered ? 0.95 : 0.65),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: 1
+            )
+        case .danger:
+            shape.strokeBorder(Color.csDangerBorder.opacity(hovered ? 0.95 : 0.65), lineWidth: 1)
+        case .ghost:
+            EmptyView()
+        }
+    }
+
+    private func shadowColor(hovered: Bool) -> Color {
+        guard isEnabled else { return .clear }
+        switch kind {
+        case .primary: return Color.csAccent.opacity(hovered ? 0.34 : 0.22)
+        case .secondary: return Color.black.opacity(colorScheme == .dark ? 0.16 : 0.05)
+        case .danger: return Color.csDanger.opacity(hovered ? 0.16 : 0.08)
+        case .ghost: return .clear
         }
     }
 
@@ -85,15 +165,6 @@ private struct CSButtonBody: View {
         case .secondary: .csText
         case .danger: .csDanger
         case .ghost: .csAccentText
-        }
-    }
-
-    private func background(pressed: Bool, hovered: Bool) -> Color {
-        switch kind {
-        case .primary: !isEnabled ? Color.csSurface2 : (pressed || hovered ? Color.csAccentHi : Color.csAccent)
-        case .secondary: hovered ? Color.csBorder : Color.csSurface2
-        case .danger: Color.csDangerSoft
-        case .ghost: hovered ? Color.csSurface2 : Color.clear
         }
     }
 }
@@ -140,18 +211,57 @@ enum TileStyle {
     case plain, active
 }
 
-/// Karo: düz yüzey, ince çerçeve, karo köşesi (16). Tıklanan karo üzerine gelinince `fill` ile yüzey-2 zemin alır.
+/// Liquid Glass karo: yarı saydam macOS materyali, yumuşak cam üst parıltısı ve keskin kenar ışığı.
 struct TileBackground: ViewModifier {
     var style: TileStyle = .plain
     var padding: CGFloat = Theme.space("tile")
     var fill: Color = .csSurface
+    @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: Theme.radius("card"), style: .continuous)
+        let dark = colorScheme == .dark
         return content
             .padding(padding)
-            .background(fill, in: shape)
-            .overlay(shape.strokeBorder(style == .active ? Color.csAccent : Color.csTileBorder))
+            .background {
+                ZStack {
+                    shape.fill(.ultraThinMaterial)
+                    shape.fill(fill.opacity(dark ? 0.62 : 0.78))
+                    shape.fill(
+                        LinearGradient(
+                            colors: [.white.opacity(dark ? 0.065 : 0.55), .clear],
+                            startPoint: .top,
+                            endPoint: .center
+                        )
+                    )
+                }
+            }
+            .overlay {
+                if style == .active {
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [Color.csAccentHi, Color.csAccent],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.5
+                    )
+                } else {
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                .white.opacity(dark ? 0.22 : 0.85),
+                                Color.csTileBorder.opacity(dark ? 0.72 : 0.85),
+                                Color.csAccent.opacity(dark ? 0.14 : 0.10),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+                }
+            }
+            .shadow(color: Color.black.opacity(dark ? 0.26 : 0.06), radius: dark ? 14 : 10, y: dark ? 6 : 4)
     }
 }
 
@@ -496,25 +606,44 @@ struct StatusRow: View {
     }
 }
 
-/// Durum karosu: üstte etiket satırı (simge, ad, durum noktası), altında değer.
+/// Durum karosu: üstte cam simge rozeti + başlık + durum noktası, altında değer ve isteğe bağlı alt metin.
 struct StatusTile<Accessory: View>: View {
     let symbol: String
     let title: LocalizedStringKey
     let value: String
+    var subtitle: String? = nil
     var tone: StatusTone = .idle
     @ViewBuilder var accessory: Accessory
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.space("s")) {
             HStack(spacing: Theme.space("inline")) {
-                TileIcon(symbol: symbol)
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(tone == .idle ? Color.csSecondary : tone.color)
+                    .frame(width: 24, height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.radius("tag"), style: .continuous)
+                            .fill((tone == .idle ? Color.csSurface2 : tone.color.opacity(0.16)))
+                    )
+                    .accessibilityHidden(true)
                 Text(title).font(.csCaption).foregroundStyle(Color.csSecondary)
                 Spacer(minLength: 0)
-                if tone != .idle { StatusDot(color: tone.color) }
+                if tone == .good {
+                    LiveDot(color: tone.color)
+                } else if tone != .idle {
+                    StatusDot(color: tone.color)
+                }
             }
             Text(verbatim: value)
                 .font(.csHeadline)
                 .fixedSize(horizontal: false, vertical: true)
+            if let subtitle, !subtitle.isEmpty {
+                Text(verbatim: subtitle)
+                    .font(.csCaption)
+                    .foregroundStyle(Color.csSecondary)
+                    .lineLimit(1)
+            }
             accessory
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -524,8 +653,32 @@ struct StatusTile<Accessory: View>: View {
 }
 
 extension StatusTile where Accessory == EmptyView {
-    init(symbol: String, title: LocalizedStringKey, value: String, tone: StatusTone = .idle) {
-        self.init(symbol: symbol, title: title, value: value, tone: tone) { EmptyView() }
+    init(symbol: String, title: LocalizedStringKey, value: String, subtitle: String? = nil, tone: StatusTone = .idle) {
+        self.init(symbol: symbol, title: title, value: value, subtitle: subtitle, tone: tone) { EmptyView() }
+    }
+}
+
+/// Apple Pro Liquid Glass telemetri çipi (OCR / Çeviri / Gecikme / Güven / Paket).
+struct TelemetryChip: View {
+    let icon: String
+    let label: String
+    var tint: Color = .csSecondary
+    var softFill: Color = .csSurface2
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(tint)
+            Text(verbatim: label)
+                .font(.csCaption.monospacedDigit())
+                .foregroundStyle(tint == .csSecondary ? Color.csText : tint)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 9)
+        .frame(height: 24)
+        .background(softFill.opacity(0.85), in: Capsule())
+        .overlay(Capsule().strokeBorder(tint.opacity(0.22), lineWidth: 1))
     }
 }
 
@@ -567,14 +720,34 @@ struct ErrorText: View {
     }
 }
 
-/// Uygulamanın tamamına zemin rengi, yazı rengi ve temel yazı boyutunu verir.
+/// Uygulamanın tamamına Liquid Glass atmosferik stüdyo zemini, yazı rengi ve temel yazı boyutunu verir.
 struct AppSurface: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
     func body(content: Content) -> some View {
+        let dark = colorScheme == .dark
         content
             .font(.csBody)
             .foregroundStyle(Color.csText)
             .tint(Color.csAccentText)
-            .background(Color.csBackground.ignoresSafeArea())
+            .background {
+                ZStack {
+                    Color.csBackground
+                    RadialGradient(
+                        colors: [Color.csAccent.opacity(dark ? 0.13 : 0.11), .clear],
+                        center: .topLeading,
+                        startRadius: 20,
+                        endRadius: 560
+                    )
+                    RadialGradient(
+                        colors: [Color.csPro.opacity(dark ? 0.10 : 0.07), .clear],
+                        center: .bottomTrailing,
+                        startRadius: 20,
+                        endRadius: 520
+                    )
+                }
+                .ignoresSafeArea()
+            }
     }
 }
 

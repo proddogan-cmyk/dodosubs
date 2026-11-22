@@ -4,8 +4,8 @@ import SwiftUI
 
 struct WelcomeStep: View {
     var body: some View {
-        StepLayout(title: "Welcome to CouchSubs",
-                   message: "CouchSubs reads the English subtitles of your PS5 games and shows a Turkish translation on your TV, on top of the game. You keep playing on the TV with your own controller.") {
+        StepLayout(title: "DodoSubs'a Hoş Geldiniz",
+                   message: "DodoSubs, PS5 oyunlarındaki İngilizce altyazıları ve oyun içi telefon mesajlarını okuyup TV'nizde canlı Türkçe gösterir. Kendi kolunuzla oynamaya devam edersiniz.") {
             Card(title: "You will need:") {
                 Label("A PS5 on the same Wi-Fi network as this Mac", systemImage: "gamecontroller")
                 Label("An LG TV with the CouchSubs TV app", systemImage: "tv")

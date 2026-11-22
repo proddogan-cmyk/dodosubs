@@ -8,28 +8,49 @@ struct AboutView: View {
 
     var body: some View {
         VStack(spacing: Theme.space("m")) {
-            LogoView(size: 88)
-            Text(verbatim: "CouchSubs").font(.csTitle)
-            Text(verbatim: AppIdentity.version).foregroundStyle(Color.csSecondary)
-            Text(verbatim: "Copyright © 2026 Sinan Yorulmaz")
-                .foregroundStyle(Color.csSecondary)
-            Text("Free and open source under the GNU AGPL-3.0 license.")
-                .multilineTextAlignment(.center)
-            Text("Remote Play connection by chiaki-ng (AGPL-3.0). Thanks to its developers.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(Color.csSecondary)
+            LogoView(size: 92)
+            VStack(spacing: 4) {
+                Text(verbatim: "DodoSubs").font(.csDisplay)
+                HStack(spacing: 8) {
+                    Text(verbatim: "LIQUID GLASS STUDIO")
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(1.1)
+                        .foregroundStyle(Color.csAccentText)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.csAccentSoft.opacity(0.9), in: Capsule())
+                    Text(verbatim: "v\(AppIdentity.version)")
+                        .font(.csCaption.monospacedDigit())
+                        .foregroundStyle(Color.csSecondary)
+                }
+            }
+            VStack(spacing: 6) {
+                Text("PS5 ve LG OLED TV için canlı Türkçe altyazı ve İkiz Telefon stüdyosu.")
+                    .font(.csBody)
+                    .multilineTextAlignment(.center)
+                Text("GNU AGPL-3.0 açık kaynak lisansı altında CouchSubs ve chiaki-ng altyapısı üzerine geliştirilmiştir.")
+                    .font(.csCallout)
+                    .foregroundStyle(Color.csSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(Theme.space("m"))
+            .frame(maxWidth: .infinity)
+            .tile(padding: Theme.space("m"))
             HStack(spacing: Theme.space("m")) {
                 Link("Source code", destination: AppIdentity.sourceURL)
                 Text(verbatim: "·").foregroundStyle(Color.csSecondary)
                 Link(destination: URL(string: "https://github.com/chiaki-ng/chiaki-ng")!) { Text(verbatim: "chiaki-ng") }
             }
             .foregroundStyle(Color.csAccentText)
-            Text("CouchSubs is not affiliated with Sony Interactive Entertainment. PlayStation and PS5 are trademarks of Sony Interactive Entertainment Inc.")
-                .font(.csCaption).foregroundStyle(Color.csSecondary)
+            Text("DodoSubs, Sony Interactive Entertainment ile ilişkili değildir. PlayStation ve PS5, Sony Interactive Entertainment Inc.'in ticari markalarıdır.")
+                .font(.csCaption)
+                .foregroundStyle(Color.csSecondary)
                 .multilineTextAlignment(.center)
-            Button("Close") { dismiss() }.buttonStyle(.primary).keyboardShortcut(.defaultAction)
+            Button("Close") { dismiss() }
+                .buttonStyle(CSButtonStyle(kind: .primary, height: "buttonLarge"))
+                .keyboardShortcut(.defaultAction)
         }
         .padding(Theme.space("xxl"))
-        .frame(width: 460)
+        .frame(width: 480)
     }
 }

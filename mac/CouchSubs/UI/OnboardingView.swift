@@ -152,7 +152,7 @@ private struct StepRow: View {
     /// Adımın kendi başlığı (adım ekranındaki StepLayout başlığıyla aynı).
     static func title(_ step: AppModel.Step) -> LocalizedStringKey {
         switch step {
-        case .welcome: "Welcome to CouchSubs"
+        case .welcome: "DodoSubs'a Hoş Geldiniz"
         case .secondAccount: "A second PSN account"
         case .psnLogin: "Sign in with the second account"
         case .console: "Connect your PS5"
