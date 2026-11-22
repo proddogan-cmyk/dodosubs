@@ -13,6 +13,10 @@ struct OverlayRegion: Equatable, Identifiable {
     let presentation: RegionPresentation
     /// Yan balon görsel teması.
     let theme: BubbleTheme
+    /// İkiz telefon sohbet baloncukları (gönderen, yön, saat, kararlı kimlik).
+    let blocks: [ScreenTranslation.Item]?
+    /// İkiz telefon üst başlık / saat / tema seçenekleri.
+    let options: BubbleOptions
 
     /// Ekranın solundaki alan sola, sağındaki sağa, ortadaki ortaya.
     var side: HorizontalPlacement {
@@ -54,10 +58,13 @@ extension AppModel {
             overlayScreenUntil = 0
         case .clear:
             if overlayScreenUntil <= now { overlayStack.clear(now: now) }
-        // Ek alanların çevirisi altyazının üstünde, alanın bulunduğu yana yaslı küçük kutularda durur.
-        case .region(let id, let text, let box, let presentation, let theme):
+        // Ek alanların çevirisi altyazının üstünde, alanın bulunduğu yana yaslı küçük kutularda ya da ikiz telefonda durur.
+        case .region(let id, let text, let box, let presentation, let theme, let blocks, let options):
             var regions = overlayRegions.filter { $0.id != id }
-            if !text.isEmpty { regions.append(OverlayRegion(id: id, text: text, box: box, presentation: presentation, theme: theme)) }
+            if !text.isEmpty {
+                regions.append(OverlayRegion(id: id, text: text, box: box, presentation: presentation,
+                                             theme: theme, blocks: blocks, options: options))
+            }
             overlayRegions = regions.sorted { ($0.box?.top ?? 0) < ($1.box?.top ?? 0) }
             return
         case .regionClear:

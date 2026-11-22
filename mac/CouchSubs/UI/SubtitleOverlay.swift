@@ -318,54 +318,181 @@ struct SubtitleOverlayView: View {
             .gesture(moveGesture)
     }
 
-    /// Ek alanın çevirisi: normal alanlarda koyu kutu, telefon yan balonunda buzlu cam (`.ultraThinMaterial`) balon.
+    /// Ek alanın çevirisi: normal alanlarda koyu kutu, telefon yan balonunda gerçekçi buzlu cam İkiz Telefon.
     private func regionBox(_ region: OverlayRegion) -> some View {
         let style = model.settings.style
-        let size = max(12, CGFloat(style.fontSize) * scale * 0.55)
+        let size = max(12, CGFloat(style.fontSize) * scale * 0.50 * CGFloat(region.options.scale))
         let alignment: Alignment = switch region.side {
         case .leading: .leading
         case .center: .center
         case .trailing: .trailing
         }
         let isBubble = region.presentation == .sideBubble
-        let corner = (isBubble ? 14 : 8) * scale
-        let content = Text(verbatim: region.text)
-            .font(.system(size: size, weight: .semibold))
-            .foregroundStyle(Self.color(style.textColor))
-            .shadow(color: .black.opacity(isBubble ? 0.55 : 0), radius: 2 * scale, x: 0, y: 1 * scale)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.vertical, (isBubble ? 10 : 6) * scale)
-            .padding(.horizontal, (isBubble ? 16 : 14) * scale)
         return Group {
             if isBubble {
-                let borderTint: Color = switch region.theme {
-                case .appleGlass: Color.white.opacity(0.26)
-                case .viceNeon: Color.pink.opacity(0.65)
-                case .stealthDark: Color.white.opacity(0.14)
-                }
-                let glassTint: Color = switch region.theme {
-                case .appleGlass: Color(red: 0.08, green: 0.11, blue: 0.18).opacity(0.42)
-                case .viceNeon: Color(red: 0.15, green: 0.06, blue: 0.25).opacity(0.54)
-                case .stealthDark: Color(red: 0.04, green: 0.05, blue: 0.07).opacity(0.75)
-                }
-                content
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
-                    .background(glassTint, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .strokeBorder(borderTint, lineWidth: 1)
-                    )
-                    .shadow(color: region.theme == .viceNeon ? Color.pink.opacity(0.24) : .black.opacity(0.35),
-                            radius: 14 * scale, x: 0, y: 6 * scale)
+                twinPhoneMirror(region, size: size)
             } else {
-                content
-                    .background(Color.black.opacity(0.85), in: RoundedRectangle(cornerRadius: corner))
+                Text(verbatim: region.text)
+                    .font(.system(size: size, weight: .semibold))
+                    .foregroundStyle(Self.color(style.textColor))
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 6 * scale)
+                    .padding(.horizontal, 14 * scale)
+                    .background(Color.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 8 * scale))
             }
         }
         .frame(maxWidth: .infinity, alignment: alignment)
         .contentShape(Rectangle())
         .gesture(moveGesture)
+    }
+
+    private func twinPhoneMirror(_ region: OverlayRegion, size: CGFloat) -> some View {
+        let borderTint: Color = switch region.theme {
+        case .appleGlass: Color.white.opacity(0.24)
+        case .viceNeon: Color.pink.opacity(0.60)
+        case .stealthDark: Color.white.opacity(0.14)
+        }
+        let glassTint: Color = switch region.theme {
+        case .appleGlass: Color(red: 0.07, green: 0.10, blue: 0.16).opacity(0.72)
+        case .viceNeon: Color(red: 0.13, green: 0.05, blue: 0.22).opacity(0.76)
+        case .stealthDark: Color(red: 0.04, green: 0.05, blue: 0.07).opacity(0.88)
+        }
+        let outgoingTint: Color = switch region.theme {
+        case .appleGlass: Color(red: 0.05, green: 0.48, blue: 0.96).opacity(0.88)
+        case .viceNeon: Color(red: 0.85, green: 0.26, blue: 0.62).opacity(0.86)
+        case .stealthDark: Color(red: 0.06, green: 0.46, blue: 0.42).opacity(0.90)
+        }
+        let header = region.options.phoneHeader
+        let title = header?.title ?? (region.options.layout == .card ? "Telefon" : "Mesajlar")
+        let subtitle = header?.subtitle ?? (region.options.layout == .chat ? "Canlı çeviri" : nil)
+        let blocks = region.blocks ?? []
+
+        return VStack(alignment: .leading, spacing: 0) {
+            // Üst durum çubuğu (saat + TR) ve sohbet başlığı.
+            VStack(alignment: .leading, spacing: 5 * scale) {
+                if let clock = header?.clock, !clock.isEmpty {
+                    HStack {
+                        Text(clock)
+                            .font(.system(size: size * 0.62, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.8))
+                        Spacer()
+                        Text("TR")
+                            .font(.system(size: size * 0.56, weight: .heavy))
+                            .padding(.horizontal, 6 * scale)
+                            .padding(.vertical, 1 * scale)
+                            .background(Color.white.opacity(0.14), in: Capsule())
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
+                }
+                HStack(spacing: 8 * scale) {
+                    Circle()
+                        .fill(Self.hexColor(header?.accentColor) ?? Color.cyan)
+                        .frame(width: size * 1.35, height: size * 1.35)
+                        .overlay(Text(String(title.prefix(1)).uppercased())
+                            .font(.system(size: size * 0.72, weight: .heavy))
+                            .foregroundStyle(Color(red: 0.05, green: 0.07, blue: 0.14)))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title)
+                            .font(.system(size: size * 0.86, weight: .bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        if let subtitle, !subtitle.isEmpty {
+                            Text(subtitle)
+                                .font(.system(size: size * 0.64, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.68))
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 12 * scale)
+            .padding(.vertical, 9 * scale)
+            .background(Color.white.opacity(0.05))
+
+            Divider().overlay(Color.white.opacity(0.12))
+
+            VStack(alignment: .leading, spacing: 7 * scale) {
+                if blocks.isEmpty {
+                    Text(verbatim: region.text)
+                        .font(.system(size: size, weight: .medium))
+                        .foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(Array(blocks.enumerated()), id: \.offset) { idx, item in
+                        let isOutgoing = item.side == .outgoing
+                        let prev = idx > 0 ? blocks[idx - 1] : nil
+                        let grouped = !isOutgoing && item.sender != nil && prev?.side != .outgoing && prev?.sender == item.sender && item.dateLabel == nil
+                        if let date = item.dateLabel, !date.isEmpty, prev?.dateLabel != date {
+                            HStack {
+                                Spacer()
+                                Text(date)
+                                    .font(.system(size: size * 0.62, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.8))
+                                    .padding(.horizontal, 9 * scale)
+                                    .padding(.vertical, 2 * scale)
+                                    .background(Color.white.opacity(0.12), in: Capsule())
+                                Spacer()
+                            }
+                        }
+                        HStack {
+                            if isOutgoing { Spacer(minLength: 28 * scale) }
+                            VStack(alignment: .leading, spacing: 3 * scale) {
+                                if !isOutgoing, !grouped, let sender = item.sender, !sender.isEmpty {
+                                    Text(sender)
+                                        .font(.system(size: size * 0.70, weight: .bold))
+                                        .foregroundStyle(Self.hexColor(item.senderColor) ?? Color.cyan)
+                                }
+                                Text(verbatim: item.translation)
+                                    .font(.system(size: size, weight: .medium))
+                                    .foregroundStyle(.white)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if (item.timestamp != nil && !(item.timestamp?.isEmpty ?? true)) || isOutgoing {
+                                    HStack(spacing: 4 * scale) {
+                                        Spacer(minLength: 0)
+                                        if let time = item.timestamp, !time.isEmpty {
+                                            Text(time)
+                                                .font(.system(size: size * 0.58, weight: .semibold))
+                                                .foregroundStyle(.white.opacity(0.75))
+                                        }
+                                        if isOutgoing {
+                                            Text("✓✓")
+                                                .font(.system(size: size * 0.58, weight: .bold))
+                                                .foregroundStyle(Color.cyan.opacity(0.95))
+                                        }
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 7 * scale)
+                            .padding(.horizontal, 11 * scale)
+                            .background(isOutgoing ? outgoingTint : Color.white.opacity(0.12),
+                                        in: RoundedRectangle(cornerRadius: 13 * scale, style: .continuous))
+                            if !isOutgoing { Spacer(minLength: 24 * scale) }
+                        }
+                    }
+                }
+            }
+            .padding(11 * scale)
+            .animation(.spring(response: 0.28, dampingFraction: 0.86), value: blocks.map { $0.msgId ?? $0.translation })
+        }
+        .frame(maxWidth: 360 * scale)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20 * scale, style: .continuous))
+        .background(glassTint, in: RoundedRectangle(cornerRadius: 20 * scale, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20 * scale, style: .continuous)
+                .strokeBorder(borderTint, lineWidth: 1.2)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 20 * scale, style: .continuous))
+        .shadow(color: region.theme == .viceNeon ? Color.pink.opacity(0.24) : .black.opacity(0.42),
+                radius: 16 * scale, x: 0, y: 8 * scale)
+    }
+
+    private static func hexColor(_ hex: String?) -> Color? {
+        guard let hex, hex.hasPrefix("#"), hex.count == 7,
+              let value = Int(hex.dropFirst(), radix: 16) else { return nil }
+        return Color(red: Double((value >> 16) & 0xFF) / 255,
+                     green: Double((value >> 8) & 0xFF) / 255,
+                     blue: Double(value & 0xFF) / 255)
     }
 
     /// TV uygulamasındaki OLED-dostu sinema renkleri (kırık beyaz #F5F6F8, sıcak sinema sarısı #FCE26B).

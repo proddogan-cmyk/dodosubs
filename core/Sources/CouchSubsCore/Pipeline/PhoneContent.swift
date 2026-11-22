@@ -2,43 +2,84 @@
 
 import Foundation
 
-/// Oyun içi telefon ekranından okunan metni temizler, ana altyazı sızıntısını ayıklar ve her mesajı
-/// gönderen/gövde olarak ayrı bloklara böler.
+/// Oyun içi telefon ekranından okunan metni temizler, ana altyazı sızıntısını ayıklar, sohbet başlığını/saatini,
+/// gelen-giden (sol/sağ) baloncuk yönünü ve mesaj saatlerini çıkararak her mesajı ayrı kararlı bloklara böler.
 ///
 /// GTA 6 gibi oyunlarda telefonun alt kenarına ana diyalog altyazısı sızabiliyor; ayrıca saat ("2:21 pm"),
 /// şifreleme etiketi ("Messages encrypted") ve üye sayısı ("3 Members") gibi sabit telefon arayüzü yazıları
 /// mesajla tek paragrafta yapıştığında oyun paketi (`paket:gta-6`) ıskalanıp yavaş internet çevirisine düşüyordu.
+/// Artık bu üst bilgi ve zaman damgaları atılmak yerine TV'deki "İkiz Türkçe Telefon" görünümüne aktarılır.
 public enum PhoneContent {
     /// Telefon ekranında açık olan uygulamanın görsel yerleşim kipi.
     public enum Layout: String, Codable, Equatable, Sendable {
-        /// Mesajlaşma / WhatUp: her mesaj kendi gönderen renkli balonuyla.
+        /// Mesajlaşma / WhatUp: gelen (sol) ve giden (sağ) baloncuklu gerçek sohbet akışı.
         case chat
-        /// E-posta / haber / sosyal medya / uzun not: tek, düzenli buzlu cam okuma kartı.
+        /// E-posta / haber / sosyal medya / uzun not: düzenli buzlu cam okuma kartı.
         case card
         /// Ana ekran ikonları / kamera / harita: çevrilecek cümle yok, TV sessiz kalır.
         case quiet
     }
 
+    /// Mesaj balonunun sohbet içindeki yönü (ekrandaki yatay hizasından otomatik algılanır).
+    public enum BubbleSide: String, Codable, Equatable, Sendable {
+        /// Karşı taraftan gelen mesaj (sola yaslı).
+        case incoming
+        /// Oyuncunun gönderdiği mesaj (sağa yaslı).
+        case outgoing
+    }
+
+    /// Telefonun üst durum çubuğu ve sohbet başlığı (kişi/grup adı, üye sayısı / durum, oyun içi saat).
+    public struct Header: Equatable, Codable, Sendable {
+        public var title: String?
+        public var subtitle: String?
+        public var clock: String?
+        public var accentColor: String?
+
+        public init(title: String? = nil, subtitle: String? = nil, clock: String? = nil, accentColor: String? = nil) {
+            self.title = title
+            self.subtitle = subtitle
+            self.clock = clock
+            self.accentColor = accentColor
+        }
+
+        public var isEmpty: Bool {
+            (title ?? "").isEmpty && (subtitle ?? "").isEmpty && (clock ?? "").isEmpty
+        }
+    }
+
     public struct Parsed: Equatable, Sendable {
         public var layout: Layout
+        public var header: Header?
         public var messages: [Message]
 
-        public init(layout: Layout, messages: [Message]) {
+        public init(layout: Layout, header: Header? = nil, messages: [Message]) {
             self.layout = layout
+            self.header = header
             self.messages = messages
         }
     }
 
     public struct Message: Equatable, Sendable {
+        /// Kaydırma (scroll) sırasında aynı balonun TV'de titremeyip yumuşakça yer değiştirmesi için kararlı kimlik.
+        public var stableId: String
+        public var side: BubbleSide
         public var sender: String?
         public var senderColor: String?
+        public var timestamp: String?
+        public var dateLabel: String?
         public var body: String
         public var box: TextBox
         public var lineHeight: Double
 
-        public init(sender: String?, senderColor: String? = nil, body: String, box: TextBox, lineHeight: Double) {
+        public init(stableId: String? = nil, side: BubbleSide = .incoming, sender: String?,
+                    senderColor: String? = nil, timestamp: String? = nil, dateLabel: String? = nil,
+                    body: String, box: TextBox, lineHeight: Double) {
+            self.stableId = stableId ?? PhoneContent.stableMessageId(side: side, sender: sender, body: body)
+            self.side = side
             self.sender = sender
             self.senderColor = senderColor
+            self.timestamp = timestamp
+            self.dateLabel = dateLabel
             self.body = body
             self.box = box
             self.lineHeight = lineHeight
@@ -63,6 +104,19 @@ public enum PhoneContent {
         return palette[abs(hash) % palette.count]
     }
 
+    /// Kaydırma sırasında noktalama/büyük-küçük harf farklarından etkilenmeyen kararlı mesaj kimliği (FNV-1a).
+    public static func stableMessageId(side: BubbleSide, sender: String?, body: String) -> String {
+        let normSender = TextMatch.normalize(sender ?? "")
+        let normBody = TextMatch.normalize(body)
+        let seed = "\(side.rawValue)|\(normSender)|\(normBody.prefix(64))"
+        var hash: UInt64 = 14695981039346656037
+        for byte in seed.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+        return String(format: "m_%012llx", hash & 0x0000_ffff_ffff_ffff)
+    }
+
     /// Telefon arayüzü gürültüsü: saat, şifreleme etiketi, bildirim/üye sayacı.
     private static let chromePhrases: Set<String> = [
         "messages encrypted", "end to end encrypted", "end-to-end encrypted", "encrypted",
@@ -81,6 +135,79 @@ public enum PhoneContent {
         "call", "meet", "come", "going", "ready", "done", "check", "look", "need", "want", "got",
         "new", "all", "more", "view", "open", "close", "delete", "send", "cancel"
     ]
+
+    private static let pureTimeRegex = try! NSRegularExpression(
+        pattern: #"^(\d{1,2}[:.]\d{2}(?:\s*[ap]\.?m\.?)?)$"#, options: [.caseInsensitive]
+    )
+    private static let trailingTimeRegex = try! NSRegularExpression(
+        pattern: #"^(.*?)\s+(\d{1,2}[:.]\d{2}(?:\s*[ap]\.?m\.?)?)$"#, options: [.caseInsensitive]
+    )
+
+    /// Satır saf saat mi (`"2:21 pm"`, `"14:05"` vb.); öyleyse temiz saat metnini döner.
+    public static func extractTimeString(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = String(trimmed.drop(while: { !$0.isNumber }))
+            .trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespaces))
+        guard !cleaned.isEmpty else { return nil }
+        let ns = cleaned as NSString
+        guard pureTimeRegex.firstMatch(in: cleaned, range: NSRange(location: 0, length: ns.length)) != nil else {
+            return nil
+        }
+        return cleaned.replacingOccurrences(of: ".", with: ":")
+    }
+
+    /// Mesaj satırının sonuna yapışmış zaman damgasını ayırır (`"We're at the bar. 2:21 pm"` → gövde + saat).
+    public static func splitTrailingTimestamp(_ text: String) -> (body: String, time: String?) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ns = trimmed as NSString
+        guard let match = trailingTimeRegex.firstMatch(in: trimmed, range: NSRange(location: 0, length: ns.length)),
+              match.numberOfRanges == 3 else {
+            return (trimmed, nil)
+        }
+        let body = ns.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let time = ns.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard body.count >= 2 else { return (trimmed, nil) }
+        return (body, time.replacingOccurrences(of: ".", with: ":"))
+    }
+
+    /// `"Today"` / `"Yesterday"` / `"Just now"` tarih ayırıcılarını Türkçeye çevirir.
+    public static func localizedDateLabel(_ text: String) -> String? {
+        let cleaned = text.drop(while: { !$0.isLetter && !$0.isNumber })
+        let lower = cleaned.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))
+        switch lower {
+        case "today": return "Bugün"
+        case "yesterday": return "Dün"
+        case "just now", "now": return "Şimdi"
+        default: return nil
+        }
+    }
+
+    /// `"3 Members"`, `"Online"`, `"Messages encrypted"` gibi üst bilgi alt başlıklarını Türkçeleştirir.
+    private static func localizedHeaderSubtitle(_ text: String) -> (text: String, priority: Int)? {
+        let cleaned = text.drop(while: { !$0.isLetter && !$0.isNumber })
+        let lower = cleaned.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))
+        if lower == "typing" { return ("Yazıyor…", 4) }
+        if lower == "online" { return ("Çevrimiçi", 3) }
+        if let range = lower.range(of: #"^(\d+)\s+members?$"#, options: .regularExpression) {
+            let digits = lower[range].prefix(while: \.isNumber)
+            return ("\(digits) Üye", 3)
+        }
+        if let range = lower.range(of: #"^(\d+)\s+notifications?$"#, options: .regularExpression) {
+            let digits = lower[range].prefix(while: \.isNumber)
+            return ("\(digits) Bildirim", 2)
+        }
+        if lower.contains("encrypted") { return ("Uçtan uca şifreli", 1) }
+        return nil
+    }
+
+    /// `"Brian, Jason, Lucia"` gibi virgülle ayrılmış grup sohbeti başlığı mı.
+    private static func isGroupTitleList(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.contains(","), trimmed.count <= 48 else { return false }
+        let parts = trimmed.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count >= 2, parts.count <= 5 else { return false }
+        return parts.allSatisfy { isLikelySenderHeader($0) }
+    }
 
     /// Satır saf telefon arayüzü gürültüsü mü (saat, "3 Members", "Messages encrypted", "4 Notifications" vb.).
     public static func isChrome(_ text: String) -> Bool {
@@ -112,7 +239,18 @@ public enum PhoneContent {
     /// Telefon kutusunun içinden hem sabit arayüz gürültüsünü hem de ekranda o an gösterilen ana diyalog altyazısını
     /// ayıklar. Böylece karakterler konuşurken ana altyazı telefon balonuna sızmaz.
     public static func filterLines(_ lines: [TextLine], activeSubtitle: String?) -> [TextLine] {
-        var result = lines.filter { !isChrome($0.text) }
+        var result = lines.filter { line in
+            guard !isChrome(line.text) else { return false }
+            // Kaydırma sırasında ekranın en üst/alt 4%'üne yarım sıkışmış çok kısa/düşük güvenli parçaları ele.
+            if let box = line.box {
+                let clippedEdge = box.bottom < 0.045 || box.top > 0.955
+                let trimmed = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if clippedEdge && (trimmed.count <= 4 || (line.confidence ?? 1) < 0.65) {
+                    return false
+                }
+            }
+            return true
+        }
         guard let activeSubtitle else { return result }
         let normSub = TextMatch.normalize(activeSubtitle)
         guard normSub.count >= 5 else { return result }
@@ -166,9 +304,48 @@ public enum PhoneContent {
         return (head, tail)
     }
 
+    /// İki satır aynı mesaj balonuna mı ait (dikey yakınlık + aynı yatay taraf + arada zaman damgası olmaması).
+    private static func sameBubbleAlignment(_ a: TextBox, _ b: TextBox) -> Bool {
+        let aRight = a.left >= 0.24 && a.right >= 0.72 && (a.left + a.right) / 2 >= 0.56 && (a.right - a.left) <= 0.72
+        let bRight = b.left >= 0.24 && b.right >= 0.72 && (b.left + b.right) / 2 >= 0.56 && (b.right - b.left) <= 0.72
+        if aRight != bRight { return false }
+        // İki satır birbirinin tam tersi tarafta küçük kutularsa (ör. sol 0.08..0.45 ve sağ 0.48..0.92) birleştirme.
+        if abs(a.left - b.left) > 0.22 && abs(a.right - b.right) > 0.22 { return false }
+        return true
+    }
+
+    private static func detectSide(sender: String?, localBoxes: [TextBox]) -> BubbleSide {
+        // Gönderen başlığı olan baloncuklar karşı taraftan (gelen) gelir.
+        if sender != nil { return .incoming }
+        guard !localBoxes.isEmpty else { return .incoming }
+        let minLeft = localBoxes.map(\.left).min() ?? 0
+        let maxRight = localBoxes.map(\.right).max() ?? 1
+        let centerX = (minLeft + maxRight) / 2
+        let span = maxRight - minLeft
+        // Sağ tarafa belirgin biçimde yaslanmış mesajlar oyuncunun gönderdiği (giden) baloncuktur.
+        if minLeft >= 0.24 && maxRight >= 0.72 && centerX >= 0.56 && span <= 0.72 {
+            return .outgoing
+        }
+        return .incoming
+    }
+
     /// Telefon satırlarını ayrı mesaj/gönderen bloklarına böler; böylece her mesaj oyun paketinde (`paket:gta-6`)
-    /// tek başına eşleşip 0 ms'de çevrilebilir ve TV'de gönderen adı vurgulu ayrı balonlar olarak gösterilir.
+    /// tek başına eşleşip 0 ms'de çevrilebilir ve TV'de gelen/giden baloncuk + zaman damgasıyla gösterilir.
     public static func extractMessages(from lines: [TextLine], in region: CropRegion) -> [Message] {
+        extractMessagesInternal(from: lines, in: region, timeStamps: [], dateSeparators: []).map(\.message)
+    }
+
+    private struct BuiltGroup {
+        var message: Message
+        var localBox: TextBox?
+    }
+
+    private static func extractMessagesInternal(
+        from lines: [TextLine],
+        in region: CropRegion,
+        timeStamps: [(text: String, box: TextBox)],
+        dateSeparators: [(label: String, box: TextBox)]
+    ) -> [BuiltGroup] {
         let sorted = lines.sorted { ($0.box?.top ?? 0) < ($1.box?.top ?? 0) }
         guard !sorted.isEmpty else { return [] }
 
@@ -176,27 +353,30 @@ public enum PhoneContent {
         let regionHeight = region.bottom - region.top
         let fallbackBox = TextBox(left: region.left, top: region.top, right: region.right, bottom: region.bottom)
 
-        // Satırları dikey boşluğa veya yeni gönderen başlığına göre grupla.
-        var groups: [(sender: String?, lines: [TextLine])] = []
+        // Satırları dikey boşluğa, yatay hizaya, aradaki saat/tarihe veya yeni gönderen başlığına göre grupla.
+        var groups: [(sender: String?, lines: [TextLine], inlineTime: String?)] = []
         var pendingSender: String?
         var pendingSenderBox: TextBox?
 
-        for line in sorted {
-            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
+        for rawLine in sorted {
+            let trimmed = rawLine.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let splitTime = splitTrailingTimestamp(trimmed)
+            var line = rawLine
+            line.text = splitTime.body
 
             // Kısa gönderen adı satırı ("Brian") bir sonraki mesajın başlığı olur.
-            if isLikelySenderHeader(text) {
-                pendingSender = text
+            if splitTime.time == nil, isLikelySenderHeader(line.text) {
+                pendingSender = line.text
                 pendingSenderBox = line.box
                 continue
             }
 
-            let inline = splitInlineSender(text)
+            let inline = splitInlineSender(line.text)
             if let inlineSender = inline.sender {
                 var bodyLine = line
                 bodyLine.text = inline.body
-                groups.append((sender: inlineSender, lines: [bodyLine]))
+                groups.append((sender: inlineSender, lines: [bodyLine], inlineTime: splitTime.time))
                 pendingSender = nil
                 pendingSenderBox = nil
                 continue
@@ -213,53 +393,147 @@ public enum PhoneContent {
                     if let sBox = pendingSenderBox, let lBox = line.box {
                         first.box = sBox.union(lBox)
                     }
-                    groups.append((sender: sender, lines: [first]))
+                    groups.append((sender: sender, lines: [first], inlineTime: splitTime.time))
                     pendingSender = nil
                     pendingSenderBox = nil
                     continue
                 } else {
                     // Arada büyük boşluk varsa üstteki satır sohbet göndereni değil, kart/e-posta başlığıdır.
-                    groups.append((sender: nil, lines: [TextLine(sender, box: pendingSenderBox)]))
+                    groups.append((sender: nil, lines: [TextLine(sender, box: pendingSenderBox)], inlineTime: nil))
                     pendingSender = nil
                     pendingSenderBox = nil
                 }
             }
 
-            // Önceki gruba dikeyde yakınsa (aynı mesajın devam satırı) ekle; değilse yeni mesaj başlat.
+            // Önceki gruba dikeyde yakın, aynı tarafta ve arada zaman damgası yoksa aynı mesajın devam satırıdır.
             if let last = groups.last, let prevLine = last.lines.last,
                let prevBox = prevLine.box, let currBox = line.box {
                 let lh = max(prevBox.bottom - prevBox.top, currBox.bottom - currBox.top, 0.02)
                 let gap = currBox.top - prevBox.bottom
-                if gap <= lh * 0.90 {
+                let separatorBetween = timeStamps.contains { $0.box.top >= prevBox.bottom - 0.005 && $0.box.bottom <= currBox.top + 0.005 }
+                    || dateSeparators.contains { $0.box.top >= prevBox.bottom - 0.005 && $0.box.bottom <= currBox.top + 0.005 }
+                if gap <= lh * 0.90, sameBubbleAlignment(prevBox, currBox), !separatorBetween {
                     groups[groups.count - 1].lines.append(line)
+                    if let t = splitTime.time { groups[groups.count - 1].inlineTime = t }
                     continue
                 }
             }
-            groups.append((sender: nil, lines: [line]))
+            groups.append((sender: nil, lines: [line], inlineTime: splitTime.time))
         }
 
         // Sonda yalnız kalmış bir gönderen/başlık varsa (ör. rehber/menü adı) kaybolmasın.
         if let lone = pendingSender {
-            let box = pendingSenderBox.map { $0.placed(in: place) } ?? fallbackBox
-            let lh = pendingSenderBox.map { ($0.bottom - $0.top) * regionHeight } ?? (0.04 * regionHeight)
-            return groups.map { buildMessage($0.sender, $0.lines, place: place, regionHeight: regionHeight, fallbackBox: fallbackBox) }
-                + [Message(sender: nil, body: lone, box: box, lineHeight: lh)]
+            groups.append((sender: nil, lines: [TextLine(lone, box: pendingSenderBox)], inlineTime: nil))
         }
 
-        return groups.map { buildMessage($0.sender, $0.lines, place: place, regionHeight: regionHeight, fallbackBox: fallbackBox) }
+        var built = groups.map { group -> BuiltGroup in
+            let localBoxes = group.lines.compactMap(\.box)
+            let localUnion = localBoxes.dropFirst().reduce(localBoxes.first) { $0?.union($1) }
+            let side = detectSide(sender: group.sender, localBoxes: localBoxes)
+            let msg = buildMessage(group.sender, side: side, inlineTime: group.inlineTime,
+                                   group.lines, place: place, regionHeight: regionHeight, fallbackBox: fallbackBox)
+            return BuiltGroup(message: msg, localBox: localUnion)
+        }
+
+        // 1) Mesaj içi / balon altı saat damgalarını en yakın balona bağla.
+        for stamp in timeStamps {
+            var bestIdx: Int?
+            var bestDist = Double.greatestFiniteMagnitude
+            for idx in built.indices {
+                guard built[idx].message.timestamp == nil, let lBox = built[idx].localBox else { continue }
+                // Saat balonun içinde (sağ alt) ya da hemen altında (≤ 0.09) durur.
+                guard stamp.box.top >= lBox.top - 0.02, stamp.box.top <= lBox.bottom + 0.09 else { continue }
+                let dist = abs(stamp.box.top - lBox.bottom)
+                if dist < bestDist {
+                    bestDist = dist
+                    bestIdx = idx
+                }
+            }
+            if let idx = bestIdx {
+                built[idx].message.timestamp = stamp.text
+            }
+        }
+
+        // 2) "Bugün" / "Dün" tarih ayırıcılarını hemen altındaki ilk balona bağla.
+        for sep in dateSeparators {
+            if let idx = built.firstIndex(where: { ($0.localBox?.top ?? 1) >= sep.box.bottom - 0.015 }) {
+                if built[idx].message.dateLabel == nil {
+                    built[idx].message.dateLabel = sep.label
+                }
+            }
+        }
+
+        return built
     }
 
     /// Telefon satırlarını analiz eder: ana ekran/kamera ikonlarıysa sessiz kalır (`.quiet`), sohbet uygulamasındaysa
-    /// renkli gönderen balonları (`.chat`), uzun yazı/e-posta/sosyal medya ise tek düzenli cam okuma kartı (`.card`) döner.
+    /// başlık + saat + gelen/giden baloncuklar (`.chat`), uzun yazı/e-posta/sosyal medya ise düzenli cam kart (`.card`) döner.
     public static func parse(rawLines: [TextLine], in region: CropRegion, activeSubtitle: String?) -> Parsed {
-        let hasChatCues = rawLines.contains { line in
+        let sortedRaw = rawLines.sorted { ($0.box?.top ?? 0) < ($1.box?.top ?? 0) }
+        let hasChatCues = sortedRaw.contains { line in
             let lower = line.text.lowercased()
             return lower.contains("whatup") || lower.contains("encrypted") || lower.contains("members")
-                || lower.contains("new message") || lower.contains("type a message")
+                || lower.contains("new message") || lower.contains("type a message") || lower.contains("online")
         }
-        let filtered = filterLines(rawLines, activeSubtitle: activeSubtitle)
-        let messages = extractMessages(from: filtered, in: region)
-        guard !messages.isEmpty else { return Parsed(layout: .quiet, messages: []) }
+
+        // 1) Üst durum çubuğu saati, mesaj içi saatler, tarih ayırıcıları ve sohbet üst başlığını çıkar.
+        var topClock: String?
+        var headerSubtitle: (text: String, priority: Int)?
+        var headerSubtitleTop: Double?
+        var headerTitle: String?
+        var consumedHeaderIndices: Set<Int> = []
+        var chatTimestamps: [(text: String, box: TextBox)] = []
+        var dateSeparators: [(label: String, box: TextBox)] = []
+
+        for (idx, line) in sortedRaw.enumerated() {
+            let box = line.box
+            let top = box?.top ?? 0.5
+            if let time = extractTimeString(line.text) {
+                if top < 0.16 && topClock == nil {
+                    topClock = time
+                } else if let box {
+                    chatTimestamps.append((time, box))
+                }
+                continue
+            }
+            if let date = localizedDateLabel(line.text), let box {
+                dateSeparators.append((date, box))
+                continue
+            }
+            if let sub = localizedHeaderSubtitle(line.text) {
+                if headerSubtitle == nil || sub.priority > headerSubtitle!.priority {
+                    headerSubtitle = sub
+                    headerSubtitleTop = top
+                }
+                continue
+            }
+            // Üst bantta grup adı listesi ("Brian, Jason, Lucia") varsa bunu sohbet başlığı yap.
+            if top < 0.24, headerTitle == nil, isGroupTitleList(line.text) {
+                headerTitle = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                consumedHeaderIndices.insert(idx)
+            }
+        }
+
+        // Üst bantta ("3 Members" / "Online" hemen üstünde) tek kişi/uygulama başlığı duruyorsa sohbet başlığına al.
+        if headerTitle == nil, let subTop = headerSubtitleTop {
+            for (idx, line) in sortedRaw.enumerated() where !consumedHeaderIndices.contains(idx) {
+                guard let box = line.box, box.top < 0.22, box.bottom <= subTop + 0.02 else { continue }
+                let trimmed = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !isChrome(trimmed), isLikelySenderHeader(trimmed) else { continue }
+                headerTitle = trimmed
+                consumedHeaderIndices.insert(idx)
+                break
+            }
+        }
+
+        let remainingRaw = sortedRaw.enumerated().compactMap { idx, line in
+            consumedHeaderIndices.contains(idx) ? nil : line
+        }
+        let filtered = filterLines(remainingRaw, activeSubtitle: activeSubtitle)
+        let built = extractMessagesInternal(from: filtered, in: region,
+                                            timeStamps: chatTimestamps, dateSeparators: dateSeparators)
+        let messages = built.map(\.message)
+        guard !messages.isEmpty else { return Parsed(layout: .quiet, header: nil, messages: []) }
 
         // Sadece 1-2 kelimelik telefon ana ekran uygulama ikonlarından oluşuyorsa ekranı kirletme.
         let onlyHomeIcons = messages.allSatisfy { msg in
@@ -268,15 +542,33 @@ public enum PhoneContent {
             return msg.sender == nil && words.count <= 2 && homeIconWords.contains(norm)
         }
         if onlyHomeIcons {
-            return Parsed(layout: .quiet, messages: [])
+            return Parsed(layout: .quiet, header: nil, messages: [])
         }
 
         let hasSenders = messages.contains { $0.sender != nil }
-        let layout: Layout = (hasSenders || hasChatCues) ? .chat : .card
-        return Parsed(layout: layout, messages: messages)
+        let hasOutgoing = messages.contains { $0.side == .outgoing }
+        let hasMessageTimes = messages.contains { $0.timestamp != nil }
+        let layout: Layout = (hasSenders || hasOutgoing || hasChatCues || hasMessageTimes) ? .chat : .card
+
+        // Açık sohbet başlığı kırpıldıysa gelen gönderenlerden şık bir başlık türet ("Brian" / "Brian & Lucia").
+        if layout == .chat && headerTitle == nil {
+            var uniqueSenders: [String] = []
+            for s in messages.compactMap(\.sender) where !uniqueSenders.contains(s) {
+                uniqueSenders.append(s)
+            }
+            if !uniqueSenders.isEmpty {
+                headerTitle = uniqueSenders.prefix(3).joined(separator: ", ")
+            }
+        }
+        let accent = (headerTitle ?? messages.compactMap(\.sender).first).map(colorHex(forSender:))
+        let builtHeader = Header(title: headerTitle, subtitle: headerSubtitle?.text, clock: topClock, accentColor: accent)
+        let header = builtHeader.isEmpty ? nil : builtHeader
+
+        return Parsed(layout: layout, header: header, messages: messages)
     }
 
-    private static func buildMessage(_ sender: String?, _ lines: [TextLine], place: TextBox,
+    private static func buildMessage(_ sender: String?, side: BubbleSide, inlineTime: String?,
+                                     _ lines: [TextLine], place: TextBox,
                                      regionHeight: Double, fallbackBox: TextBox) -> Message {
         let body = ScreenTranslation.paragraphs(lines).joined(separator: "\n")
         let boxes = lines.compactMap(\.box)
@@ -284,6 +576,7 @@ public enum PhoneContent {
         let heights = boxes.map { ($0.bottom - $0.top) * regionHeight }.sorted()
         let lineHeight = heights.isEmpty ? (0.04 * regionHeight) : heights[heights.count / 2]
         let color = sender.map(colorHex(forSender:))
-        return Message(sender: sender, senderColor: color, body: body, box: box, lineHeight: lineHeight)
+        return Message(side: side, sender: sender, senderColor: color, timestamp: inlineTime,
+                       body: body, box: box, lineHeight: lineHeight)
     }
 }

@@ -451,4 +451,88 @@ final class PanelPresenceTests: XCTestCase {
         XCTAssertEqual(watcher.passes, 2)
         XCTAssertEqual(reader.count, 1, "Normal görev alanı 1000 ms dolmadan tekrar okunmamalı")
     }
+
+    func testTwinPhoneDetectsHeaderClockSidesTimestampsAndDatePills() throws {
+        let region = ExtraAreaPreset.phone.region
+        let raw = [
+            TextLine("2:23 pm", box: TextBox(left: 0.08, top: 0.04, right: 0.28, bottom: 0.08)),
+            TextLine("Brian, Jason, Lucia", box: TextBox(left: 0.12, top: 0.10, right: 0.85, bottom: 0.14)),
+            TextLine("3 Members", box: TextBox(left: 0.12, top: 0.15, right: 0.45, bottom: 0.18)),
+            TextLine("Yesterday", box: TextBox(left: 0.35, top: 0.24, right: 0.65, bottom: 0.27)),
+            TextLine("Brian", box: TextBox(left: 0.08, top: 0.31, right: 0.28, bottom: 0.34)),
+            TextLine("We're waiting at the bar.", box: TextBox(left: 0.08, top: 0.35, right: 0.68, bottom: 0.41)),
+            TextLine("2:19 pm", box: TextBox(left: 0.50, top: 0.42, right: 0.68, bottom: 0.45)),
+            TextLine("On my way there now. 2:21 pm", box: TextBox(left: 0.36, top: 0.50, right: 0.94, bottom: 0.56)),
+        ]
+        let parsed = PhoneContent.parse(rawLines: raw, in: region, activeSubtitle: nil)
+        XCTAssertEqual(parsed.layout, .chat)
+        XCTAssertEqual(parsed.header?.clock, "2:23 pm")
+        XCTAssertEqual(parsed.header?.title, "Brian, Jason, Lucia")
+        XCTAssertEqual(parsed.header?.subtitle, "3 Üye")
+        XCTAssertEqual(parsed.messages.count, 2)
+
+        // 1. mesaj: soldan gelen, Brian, Dün tarih ayırıcı, 2:19 pm saatli
+        XCTAssertEqual(parsed.messages[0].side, .incoming)
+        XCTAssertEqual(parsed.messages[0].sender, "Brian")
+        XCTAssertEqual(parsed.messages[0].dateLabel, "Dün")
+        XCTAssertEqual(parsed.messages[0].timestamp, "2:19 pm")
+        XCTAssertEqual(parsed.messages[0].body, "We're waiting at the bar.")
+
+        // 2. mesaj: sağa yaslı giden (oyuncunun cevabı), satır sonu saati ayrılmış!
+        XCTAssertEqual(parsed.messages[1].side, .outgoing)
+        XCTAssertNil(parsed.messages[1].sender)
+        XCTAssertEqual(parsed.messages[1].body, "On my way there now.")
+        XCTAssertEqual(parsed.messages[1].timestamp, "2:21 pm")
+    }
+
+    func testPhoneScrollKeepsStableMessageIdsHeaderAndZeroRetranslation() async throws {
+        let reader = Reader(), translator = Translator(), server = Server()
+        let template = try XCTUnwrap(PanelTemplate.capture(from: phoneImage(background: 0.6, screen: 0.9, messageBars: 2, barShade: 0.2)))
+        let watcher = RegionWatcher(reader: reader, translator: translator, server: server,
+                                    minReadingHoldMs: 0, panelDetector: { _, _, _ in true })
+        let phone = ExtraArea(id: "phone", name: "Phone", region: ExtraAreaPreset.phone.region,
+                              onlyWhenVisible: true, panelTemplates: [template])
+
+        // 1) İlk ekran: başlık + M1 (Brian) + M2 (Oyuncu)
+        reader.lines = [
+            TextLine("2:23 pm", box: TextBox(left: 0.08, top: 0.04, right: 0.28, bottom: 0.08)),
+            TextLine("Lucia", box: TextBox(left: 0.12, top: 0.10, right: 0.40, bottom: 0.14)),
+            TextLine("Online", box: TextBox(left: 0.12, top: 0.15, right: 0.35, bottom: 0.18)),
+            TextLine("Lucia", box: TextBox(left: 0.08, top: 0.30, right: 0.28, bottom: 0.34)),
+            TextLine("Did you grab the keys?", box: TextBox(left: 0.08, top: 0.35, right: 0.68, bottom: 0.42)),
+            TextLine("Yeah, I got them right here.", box: TextBox(left: 0.34, top: 0.50, right: 0.94, bottom: 0.57)),
+        ]
+        await watcher.pass(phoneImage(background: 0.6, screen: 0.9, messageBars: 2, barShade: 0.2), areas: [phone])
+        let firstBlocks = try XCTUnwrap(server.blocks.last ?? nil)
+        XCTAssertEqual(firstBlocks.count, 2)
+        let m2Id = try XCTUnwrap(firstBlocks[1].msgId)
+        XCTAssertEqual(firstBlocks[1].side, .outgoing)
+        XCTAssertEqual(server.options.last?.phoneHeader?.title, "Lucia")
+        XCTAssertEqual(server.options.last?.phoneHeader?.subtitle, "Çevrimiçi")
+        XCTAssertEqual(translator.calls.count, 2)
+
+        // 2) Aşağı kaydırıldı: üst başlık kayboldu, M2 yukarı kaydı (1 harf OCR sapmasıyla!), M3 alttan girdi.
+        reader.lines = [
+            TextLine("Yeah, I got them right here,", box: TextBox(left: 0.34, top: 0.22, right: 0.94, bottom: 0.29)),
+            TextLine("Lucia", box: TextBox(left: 0.08, top: 0.44, right: 0.28, bottom: 0.48)),
+            TextLine("Meet me by the boat.", box: TextBox(left: 0.08, top: 0.49, right: 0.68, bottom: 0.56)),
+        ]
+        await watcher.pass(phoneImage(background: 0.6, screen: 0.85, messageBars: 3, barShade: 0.35), areas: [phone])
+        let scrolledBlocks = try XCTUnwrap(server.blocks.last ?? nil)
+        XCTAssertEqual(scrolledBlocks.count, 2)
+        // M2 aynı msgId'yi korumalı, tekrar çevrilmemeli ve yapışkan üst başlık (Lucia / 2:23 pm) korunmalı!
+        XCTAssertEqual(scrolledBlocks[0].msgId, m2Id)
+        XCTAssertEqual(translator.calls, ["Did you grab the keys?", "Yeah, I got them right here.", "Meet me by the boat."])
+        XCTAssertEqual(server.options.last?.phoneHeader?.title, "Lucia")
+        XCTAssertEqual(server.options.last?.phoneHeader?.clock, "2:23 pm")
+
+        // 3) Yukarı geri kaydırıldı: M1 ve M2 bellekte olduğu için 0 yeni çeviri çağrısı!
+        reader.lines = [
+            TextLine("Lucia", box: TextBox(left: 0.08, top: 0.30, right: 0.28, bottom: 0.34)),
+            TextLine("Did you grab the keys?", box: TextBox(left: 0.08, top: 0.35, right: 0.68, bottom: 0.42)),
+            TextLine("Yeah, I got them right here.", box: TextBox(left: 0.34, top: 0.50, right: 0.94, bottom: 0.57)),
+        ]
+        await watcher.pass(phoneImage(background: 0.6, screen: 0.9, messageBars: 2, barShade: 0.25), areas: [phone])
+        XCTAssertEqual(translator.calls.count, 3, "Yukarı geri kaydırınca bellekteki mesajlar tekrar çevrilmemeli")
+    }
 }

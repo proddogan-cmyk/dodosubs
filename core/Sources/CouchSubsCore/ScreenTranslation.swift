@@ -31,9 +31,19 @@ public enum ScreenTranslation {
         public var sender: String?
         /// Gönderen adının karakter imza rengi ("#fb7185" vb.).
         public var senderColor: String?
+        /// Kaydırma (scroll) sırasında TV'de aynı balonun yer değiştirdiğini tanıyan kararlı kimlik.
+        public var msgId: String?
+        /// Telefon sohbetinde mesajın yönü (sol gelen / sağ giden).
+        public var side: PhoneContent.BubbleSide?
+        /// Mesaj balonuna bağlı saat ("2:21 pm", "14:05").
+        public var timestamp: String?
+        /// Balonun üstünde gösterilecek tarih ayırıcı ("Bugün", "Dün").
+        public var dateLabel: String?
 
         public init(source: String, translation: String, box: TextBox, lineHeight: Double,
-                    icons: [IconPlacement]? = nil, sender: String? = nil, senderColor: String? = nil) {
+                    icons: [IconPlacement]? = nil, sender: String? = nil, senderColor: String? = nil,
+                    msgId: String? = nil, side: PhoneContent.BubbleSide? = nil,
+                    timestamp: String? = nil, dateLabel: String? = nil) {
             self.source = source
             self.translation = translation
             self.box = box
@@ -41,6 +51,10 @@ public enum ScreenTranslation {
             self.icons = icons
             self.sender = sender
             self.senderColor = senderColor
+            self.msgId = msgId
+            self.side = side
+            self.timestamp = timestamp
+            self.dateLabel = dateLabel
         }
 
         /// Birden çok parça var: TV satır satır, sola yaslı gösterir.

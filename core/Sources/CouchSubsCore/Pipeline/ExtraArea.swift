@@ -30,14 +30,18 @@ public struct BubbleOptions: Equatable, Sendable {
     /// Bildirim/telefon kapandıktan sonra okuma süresi boyunca ekranda tutuluyorsa kalan süre (ms); TV ince geri sayım
     /// çubuğu gösterir.
     public var holdMs: Int?
+    /// İkiz telefon başlık bilgileri (kişi/grup adı, üye sayısı / durum, oyun içi saat).
+    public var phoneHeader: PhoneContent.Header?
 
     public init(theme: BubbleTheme = .appleGlass, scale: Double = 1.0,
-                layout: PhoneContent.Layout? = nil, loading: Bool = false, holdMs: Int? = nil) {
+                layout: PhoneContent.Layout? = nil, loading: Bool = false, holdMs: Int? = nil,
+                phoneHeader: PhoneContent.Header? = nil) {
         self.theme = theme
         self.scale = min(1.30, max(0.85, scale))
         self.layout = layout
         self.loading = loading
         self.holdMs = holdMs
+        self.phoneHeader = phoneHeader
     }
 }
 

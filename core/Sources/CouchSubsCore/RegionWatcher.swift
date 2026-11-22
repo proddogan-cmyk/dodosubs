@@ -110,8 +110,19 @@ public final class RegionWatcher {
         var lastBubbleScale: Double = 1.0
         var lastPresentation: RegionPresentation = .overlay
         var lastPhoneLayout: PhoneContent.Layout?
+        var lastPhoneHeader: PhoneContent.Header?
+        /// Telefon açıkken kaydırma (scroll) boyunca görülen mesajların kimlik ve çeviri belleği.
+        var recentThread: [ThreadMemory] = []
         /// Bu alanın en son ne zaman kontrol edildiği (ms).
         var lastVisit: Int?
+    }
+
+    private struct ThreadMemory {
+        var msgId: String
+        var side: PhoneContent.BubbleSide
+        var sender: String?
+        var normSource: String
+        var translation: String
     }
 
     /// Alanda ayrı duran bir yazı grubu: `Candidate.paragraphs` içinde `start`'tan başlayan `count` parça, karedeki yeri
@@ -123,6 +134,10 @@ public final class RegionWatcher {
         var lineHeight: Double
         var sender: String? = nil
         var senderColor: String? = nil
+        var msgId: String? = nil
+        var side: PhoneContent.BubbleSide? = nil
+        var timestamp: String? = nil
+        var dateLabel: String? = nil
     }
 
     struct Candidate {
@@ -138,6 +153,8 @@ public final class RegionWatcher {
         var senders: [String?]? = nil
         /// Telefon uygulama düzeni (`.chat` / `.card` / `.quiet`).
         var phoneLayout: PhoneContent.Layout? = nil
+        /// Telefon üst başlık bilgileri (kişi/grup adı, üye sayısı, oyun içi saat).
+        var phoneHeader: PhoneContent.Header? = nil
     }
 
     private let reader: TextReader
@@ -272,7 +289,8 @@ public final class RegionWatcher {
         // Kullanıcı Ayarlar'dan tema/boyut değiştirdiyse TV'deki açık telefon balonunu anında güncelle!
         if styleChanged, !state.shown.isEmpty, let renderedText = state.renderedText, !renderedText.isEmpty {
             let anchor = TextBox(left: area.region.left, top: area.region.top, right: area.region.right, bottom: area.region.bottom)
-            let opts = BubbleOptions(theme: area.bubbleTheme, scale: area.bubbleScale, layout: state.lastPhoneLayout, loading: false)
+            let opts = BubbleOptions(theme: area.bubbleTheme, scale: area.bubbleScale, layout: state.lastPhoneLayout,
+                                     loading: false, phoneHeader: state.lastPhoneHeader)
             server.sendRegion(id: area.id, text: renderedText, box: state.renderedBox, lineHeight: state.renderedLineHeight,
                               icons: state.renderedIcons, blocks: state.renderedBlocks?.map(\.item),
                               presentation: area.presentation, anchor: anchor, options: opts)
@@ -331,7 +349,8 @@ public final class RegionWatcher {
                                    let renderedText = state.renderedText, !renderedText.isEmpty {
                                     let anchor = TextBox(left: area.region.left, top: area.region.top, right: area.region.right, bottom: area.region.bottom)
                                     let opts = BubbleOptions(theme: area.bubbleTheme, scale: area.bubbleScale,
-                                                             layout: state.lastPhoneLayout, loading: false, holdMs: remaining)
+                                                             layout: state.lastPhoneLayout, loading: false, holdMs: remaining,
+                                                             phoneHeader: state.lastPhoneHeader)
                                     server.sendRegion(id: area.id, text: renderedText, box: state.renderedBox,
                                                       lineHeight: state.renderedLineHeight, icons: state.renderedIcons,
                                                       blocks: state.renderedBlocks?.map(\.item),
@@ -511,12 +530,13 @@ public final class RegionWatcher {
     static func phoneCandidate(_ reading: Reading, in region: CropRegion, frame: CGImage? = nil,
                                activeSubtitle: String? = nil) -> Candidate {
         let rawLines = reading.withButtonIcons().withoutButtonPrompts().withoutOcrNoise().lines
-            .filter { ScreenTranslation.isWords($0.text) }
+            .filter { ScreenTranslation.isWords($0.text) || PhoneContent.extractTimeString($0.text) != nil }
             .sorted { ($0.box?.top ?? 0) < ($1.box?.top ?? 0) }
         let parsed = PhoneContent.parse(rawLines: rawLines, in: region, activeSubtitle: activeSubtitle)
         let messages = parsed.messages
         guard parsed.layout != .quiet, !messages.isEmpty else {
-            return Candidate(paragraphs: [], box: nil, lineHeight: nil, key: "", icons: nil, blocks: nil, senders: nil, phoneLayout: .quiet)
+            return Candidate(paragraphs: [], box: nil, lineHeight: nil, key: "", icons: nil, blocks: nil,
+                             senders: nil, phoneLayout: .quiet, phoneHeader: parsed.header)
         }
         let paragraphs = messages.map(\.body)
         let senders = messages.map(\.sender)
@@ -525,11 +545,13 @@ public final class RegionWatcher {
         let lineHeight = heights.isEmpty ? nil : heights[heights.count / 2]
         let blocks = messages.enumerated().map { index, msg in
             Block(start: index, count: 1, box: msg.box, lineHeight: msg.lineHeight,
-                  sender: msg.sender, senderColor: msg.senderColor)
+                  sender: msg.sender, senderColor: msg.senderColor,
+                  msgId: msg.stableId, side: msg.side, timestamp: msg.timestamp, dateLabel: msg.dateLabel)
         }
         let key = TextMatch.normalize(paragraphs.joined(separator: " ")) + "|p" + String(blocks.count)
         return Candidate(paragraphs: paragraphs, box: box, lineHeight: lineHeight, key: key,
-                         icons: nil, blocks: blocks, senders: senders, phoneLayout: parsed.layout)
+                         icons: nil, blocks: blocks, senders: senders,
+                         phoneLayout: parsed.layout, phoneHeader: parsed.header)
     }
 
     private static func meanDiff(_ a: [UInt8], _ b: [UInt8]) -> Double {
@@ -581,34 +603,53 @@ public final class RegionWatcher {
     }
 
     /// Kararlı yazı: öncekinden farklıysa çevrilip gönderilir, boşsa kutu kalkar.
-    private func commit(_ candidate: Candidate, area: ExtraArea) async {
+    private func commit(_ rawCandidate: Candidate, area: ExtraArea) async {
         guard var state = states[area.id] else { return }
+        // Telefon kaydırılırken aynı mesaj 1 harf OCR farkıyla gelse bile aynı `msgId` ve 0 ms çeviri belleğini koru;
+        // üst başlık (saat / grup adı / üye sayısı) kaydırma sırasında kaybolursa son geçerli başlığı sürdür.
+        var candidate = rawCandidate
+        let threadHits: [Int: String]
+        if area.onlyWhenVisible, !candidate.paragraphs.isEmpty {
+            candidate.phoneHeader = Self.mergeHeader(new: candidate.phoneHeader, previous: state.lastPhoneHeader)
+            let stabilized = Self.stabilizeScrollCandidate(candidate, memory: state.recentThread)
+            candidate = stabilized.candidate
+            threadHits = stabilized.translations
+        } else {
+            threadHits = [:]
+        }
+
+        let headerChanged = area.onlyWhenVisible && candidate.phoneHeader != state.lastPhoneHeader
         let sameText = state.shown == candidate.key
             || (area.onlyWhenVisible && !state.shown.isEmpty && !candidate.key.isEmpty
                 && TextMatch.isSimilar(Self.plainKey(state.shown), Self.plainKey(candidate.key), threshold: 0.90))
         if sameText {
             guard let renderedText = state.renderedText, !renderedText.isEmpty else { return }
-            // Telefon/yan balon modunda el sallanmasından gelen küçük (< %3.5) konum oynamalarını yok say:
-            // balonlar sabit ve titreşimsiz durur.
-            if area.presentation == .sideBubble || area.onlyWhenVisible,
+            // Telefon/yan balon modunda el sallanmasından gelen küçük (< %3.5) konum oynamalarını yok say
+            // (saat veya başlık değişmediyse balonlar sabit ve titreşimsiz durur).
+            if !headerChanged, area.presentation == .sideBubble || area.onlyWhenVisible,
                Self.isSmallJitter(state.renderedBox, candidate.box, tolerance: 0.035) {
                 return
             }
-            guard state.renderedKey == candidate.key else { return }
-            guard state.renderedBox != candidate.box || state.renderedLineHeight != candidate.lineHeight
+            guard headerChanged || state.renderedKey == candidate.key else { return }
+            guard headerChanged || state.renderedBox != candidate.box || state.renderedLineHeight != candidate.lineHeight
                     || state.renderedLayout != candidate.blocks else { return }
             // Aynı yazı kaydı: çeviriler korunur, bloklar yeni yerlerine taşınır (anahtar aynıysa grup sayısı da aynıdır).
             var moved: [(group: Int, item: ScreenTranslation.Item)]?
             if let rendered = state.renderedBlocks, let current = candidate.blocks {
                 moved = rendered.map { block -> (group: Int, item: ScreenTranslation.Item) in
                     var item = block.item
-                    item.box = current[block.group].box
-                    item.lineHeight = current[block.group].lineHeight
+                    if block.group < current.count {
+                        item.box = current[block.group].box
+                        item.lineHeight = current[block.group].lineHeight
+                        if let t = current[block.group].timestamp { item.timestamp = t }
+                        if let d = current[block.group].dateLabel { item.dateLabel = d }
+                    }
                     return (block.group, item)
                 }
             }
             let anchor = TextBox(left: area.region.left, top: area.region.top, right: area.region.right, bottom: area.region.bottom)
-            let opts = BubbleOptions(theme: area.bubbleTheme, scale: area.bubbleScale, layout: candidate.phoneLayout, loading: false)
+            let opts = BubbleOptions(theme: area.bubbleTheme, scale: area.bubbleScale, layout: candidate.phoneLayout,
+                                     loading: false, phoneHeader: candidate.phoneHeader)
             server.sendRegion(id: area.id, text: renderedText, box: candidate.box, lineHeight: candidate.lineHeight,
                               icons: state.renderedIcons, blocks: moved?.map(\.item),
                               presentation: area.presentation, anchor: anchor, options: opts)
@@ -616,6 +657,7 @@ public final class RegionWatcher {
             state.renderedLineHeight = candidate.lineHeight
             state.renderedLayout = candidate.blocks
             state.renderedBlocks = moved
+            state.lastPhoneHeader = candidate.phoneHeader
             states[area.id] = state
             return
         }
@@ -639,13 +681,16 @@ public final class RegionWatcher {
         let prepared = candidate.paragraphs.map(IconText.protect)
         let anchor = TextBox(left: area.region.left, top: area.region.top, right: area.region.right, bottom: area.region.bottom)
 
-        // 1) Önce paketten + Türkçe kontrolünden + oturum önbelleğinden 0 ms'de çözülebilenleri hemen bul.
+        // 1) Önce paketten + Türkçe kontrolünden + oturum önbelleğinden + kaydırma belleğinden 0 ms'de çözülebilenleri bul.
         var translated = resolveImmediate(candidate.paragraphs, prepared: prepared, senders: candidate.senders)
+        for (idx, cachedHit) in threadHits where idx < translated.count && translated[idx] == nil {
+            translated[idx] = cachedHit
+        }
         let fromPack = translated.indices.filter { translated[$0] != nil }.count
         let missing = translated.indices.filter { translated[$0] == nil }
 
         // 2) Kademeli Akış (Progressive Render) & Buzlu Cam Shimmer:
-        // Bazı mesajlar zaten paketten hazırsa hemen ekrana bas; hiçbiri hazır değilse motor beklenirken zarif shimmer aç.
+        // Bazı mesajlar zaten paketten/bellekten hazırsa hemen ekrana bas; hiçbiri hazır değilse motor beklenirken shimmer aç.
         if !missing.isEmpty, area.presentation == .sideBubble {
             let readyCount = translated.compactMap { $0 }.count
             if readyCount > 0 {
@@ -653,7 +698,8 @@ public final class RegionWatcher {
                               anchor: anchor, loading: true, onlyTranslated: true)
                 states[area.id]?.showingLoading = true
             } else if previousShown.isEmpty {
-                let opts = BubbleOptions(theme: area.bubbleTheme, scale: area.bubbleScale, layout: candidate.phoneLayout, loading: true)
+                let opts = BubbleOptions(theme: area.bubbleTheme, scale: area.bubbleScale, layout: candidate.phoneLayout,
+                                         loading: true, phoneHeader: candidate.phoneHeader)
                 server.sendRegion(id: area.id, text: "", box: candidate.box ?? anchor, lineHeight: candidate.lineHeight,
                                   icons: nil, blocks: nil, presentation: .sideBubble, anchor: anchor, options: opts)
                 states[area.id]?.showingLoading = true
@@ -739,7 +785,8 @@ public final class RegionWatcher {
         let rendered = IconText.render(nonEmpty.joined(separator: "\n"), slots: slots)
         let icons = rendered.icons.isEmpty ? nil : rendered.icons
         let blocks = candidate.blocks.map { Self.renderBlocks(candidate, layout: $0, text: text, similar: similar, slots: slots) }
-        let opts = BubbleOptions(theme: area.bubbleTheme, scale: area.bubbleScale, layout: candidate.phoneLayout, loading: loading)
+        let opts = BubbleOptions(theme: area.bubbleTheme, scale: area.bubbleScale, layout: candidate.phoneLayout,
+                                 loading: loading, phoneHeader: candidate.phoneHeader)
         server.sendRegion(id: area.id, text: rendered.text, box: candidate.box, lineHeight: candidate.lineHeight, icons: icons,
                           blocks: blocks?.map(\.item), presentation: area.presentation, anchor: anchor, options: opts)
         if !loading {
@@ -755,6 +802,10 @@ public final class RegionWatcher {
             states[area.id]?.renderedLayout = candidate.blocks
             states[area.id]?.renderedBlocks = blocks
             states[area.id]?.lastPhoneLayout = candidate.phoneLayout
+            states[area.id]?.lastPhoneHeader = candidate.phoneHeader
+            if area.onlyWhenVisible, let renderedBlocks = blocks {
+                rememberThread(renderedBlocks.map(\.item), areaId: area.id)
+            }
         }
     }
 
@@ -813,9 +864,67 @@ public final class RegionWatcher {
                                                           lineHeight: block.lineHeight,
                                                           icons: rendered.icons.isEmpty ? nil : rendered.icons,
                                                           sender: block.sender,
-                                                          senderColor: block.senderColor)))
+                                                          senderColor: block.senderColor,
+                                                          msgId: block.msgId,
+                                                          side: block.side,
+                                                          timestamp: block.timestamp,
+                                                          dateLabel: block.dateLabel)))
         }
         return result
+    }
+
+    private static func mergeHeader(new: PhoneContent.Header?, previous: PhoneContent.Header?) -> PhoneContent.Header? {
+        guard let previous else { return new }
+        guard let new else { return previous }
+        let merged = PhoneContent.Header(
+            title: new.title ?? previous.title,
+            subtitle: new.subtitle ?? previous.subtitle,
+            clock: new.clock ?? previous.clock,
+            accentColor: new.accentColor ?? previous.accentColor
+        )
+        return merged.isEmpty ? nil : merged
+    }
+
+    /// Kaydırma sırasında aynı mesaj 1-2 karakter OCR farkıyla tekrar okunursa mevcut `msgId` ve çevirisini korur.
+    private static func stabilizeScrollCandidate(_ candidate: Candidate, memory: [ThreadMemory]) -> (candidate: Candidate, translations: [Int: String]) {
+        guard !memory.isEmpty, var blocks = candidate.blocks else { return (candidate, [:]) }
+        var hits: [Int: String] = [:]
+        for idx in blocks.indices {
+            let pIdx = blocks[idx].start
+            guard pIdx < candidate.paragraphs.count else { continue }
+            let norm = TextMatch.normalize(IconText.plain(candidate.paragraphs[pIdx]))
+            guard norm.count >= 4 else { continue }
+            let side = blocks[idx].side ?? .incoming
+            let sender = blocks[idx].sender
+            if let match = memory.last(where: { item in
+                item.side == side
+                    && (item.sender == sender || item.sender == nil || sender == nil)
+                    && (item.normSource == norm || TextMatch.isSimilar(item.normSource, norm, threshold: 0.88))
+            }) {
+                blocks[idx].msgId = match.msgId
+                hits[pIdx] = match.translation
+            }
+        }
+        var updated = candidate
+        updated.blocks = blocks
+        return (updated, hits)
+    }
+
+    private func rememberThread(_ items: [ScreenTranslation.Item], areaId: String) {
+        guard var list = states[areaId]?.recentThread else { return }
+        for item in items {
+            let norm = TextMatch.normalize(item.source)
+            guard !norm.isEmpty, let msgId = item.msgId else { continue }
+            let entry = ThreadMemory(msgId: msgId, side: item.side ?? .incoming,
+                                     sender: item.sender, normSource: norm, translation: item.translation)
+            if let existing = list.firstIndex(where: { $0.msgId == msgId }) {
+                list[existing] = entry
+            } else {
+                list.append(entry)
+            }
+        }
+        if list.count > 40 { list.removeFirst(list.count - 40) }
+        states[areaId]?.recentThread = list
     }
 
     private func rememberTranslation(_ source: String, _ translation: String) {
@@ -892,6 +1001,8 @@ public final class RegionWatcher {
         state.renderedLineHeight = nil
         state.renderedLayout = nil
         state.renderedBlocks = nil
+        state.lastPhoneHeader = nil
+        state.recentThread.removeAll()
         guard hadAnything else { return }
         server.sendRegion(id: id, text: "", box: nil, lineHeight: nil)
         onLog?("ek alan \(name): panel kapandı")

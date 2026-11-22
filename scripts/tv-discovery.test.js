@@ -719,3 +719,64 @@ test('webOS: iki hizmet de adres vermezse null, 3 sn içinde', () => {
   assert.strictEqual(webosAddress({}).result, null);
   assert.strictEqual(webosAddress({ [NEW_CM]: {}, [OLD_CM]: { returnValue: false } }).result, null);
 });
+
+test('ikiz telefon: başlık, gelen/giden baloncuk, saat ve kaydırmada kasa/balon koruma (sıfır titreme)', () => {
+  const tv = startTv({ saved: 'http://192.168.1.109:8787', alive: new Set(['http://192.168.1.109:8787']), hasLocalAddress: false });
+  tv.clock.advance(1000);
+  const host = tv.element('regions');
+  const anchor = { left: 0.74, top: 0.46, right: 0.96, bottom: 0.94 };
+
+  tv.emit('region', {
+    id: 'phone',
+    style: 'sideBubble',
+    theme: 'appleGlass',
+    layout: 'chat',
+    anchor,
+    phoneTitle: 'Brian, Jason, Lucia',
+    phoneSubtitle: '3 Üye',
+    phoneClock: '2:23 pm',
+    phoneAccent: '#fbbf24',
+    text: 'Bardayız.\nGeliyorum.',
+    box: anchor,
+    blocks: [
+      { msgId: 'm1', side: 'incoming', sender: 'Brian', senderColor: '#fbbf24', time: '2:19 pm', date: 'Dün', text: 'Bardayız.', box: { left: 0.76, top: 0.56, right: 0.90, bottom: 0.62 } },
+      { msgId: 'm2', side: 'outgoing', time: '2:21 pm', text: 'Geliyorum.', box: { left: 0.82, top: 0.66, right: 0.94, bottom: 0.72 } }
+    ]
+  });
+
+  assert.strictEqual(host.children.length, 1);
+  const container = host.children[0];
+  assert.strictEqual(container.className, 'region-bubbles theme-appleGlass');
+  const pm = container._pm;
+  assert.ok(pm, 'ikiz telefon yapısı oluşturulmalı');
+  assert.strictEqual(pm.titleEl.textContent, 'Brian, Jason, Lucia');
+  assert.strictEqual(pm.subEl.textContent, '3 Üye');
+  assert.strictEqual(pm.clockEl.textContent, '2:23 pm');
+  const m2NodeBefore = pm.nodesById.m2;
+  assert.ok(m2NodeBefore, 'm2 balonu oluşmalı');
+  assert.strictEqual(m2NodeBefore.className, 'pm-bubble outgoing');
+
+  // Kullanıcı aşağı kaydırdı: m1 çıktı, m2 yukarı taşındı, m3 geldi → kasa ve m2 DOM düğümü AYNI kalmalı!
+  tv.emit('region', {
+    id: 'phone',
+    style: 'sideBubble',
+    theme: 'appleGlass',
+    layout: 'chat',
+    anchor,
+    phoneTitle: 'Brian, Jason, Lucia',
+    phoneSubtitle: '3 Üye',
+    phoneClock: '2:23 pm',
+    text: 'Geliyorum.\nTeknede buluşalım.',
+    box: anchor,
+    blocks: [
+      { msgId: 'm2', side: 'outgoing', time: '2:21 pm', text: 'Geliyorum.', box: { left: 0.82, top: 0.54, right: 0.94, bottom: 0.60 } },
+      { msgId: 'm3', side: 'incoming', sender: 'Lucia', senderColor: '#fb7185', time: '2:22 pm', text: 'Teknede buluşalım.', box: { left: 0.76, top: 0.64, right: 0.92, bottom: 0.70 } }
+    ]
+  });
+
+  assert.strictEqual(host.children[0], container, 'kaydırmada ikiz telefon kasası yok edilmemeli');
+  assert.strictEqual(pm.nodesById.m2, m2NodeBefore, 'hayatta kalan balon DOM düğümü yeniden kullanılmalı');
+  assert.strictEqual(pm.nodesById.m1, undefined, 'ekrandan çıkan balon temizlenmeli');
+  assert.ok(pm.nodesById.m3, 'yeni kaydırılan balon eklenmeli');
+  assert.strictEqual(pm.nodesById.m3.className, 'pm-bubble incoming');
+});

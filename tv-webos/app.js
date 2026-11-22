@@ -6,7 +6,7 @@
   'use strict';
 
   // TV uygulamasının sürümü: appinfo.json, tv-tizen/config.xml ve tv-android/app/build.gradle ile aynı tutulur.
-  var APP_VERSION = '0.9.63';
+  var APP_VERSION = '0.9.64';
   var t = window.t;
   var config = window.COUCHSUBS_CONFIG || {};
   var platform = window.COUCHSUBS_PLATFORM;
@@ -1066,9 +1066,17 @@
     var layoutMode = (data.layout === 'card' || data.layout === 'chat') ? data.layout : 'chat';
     var bubbleClass = 'region-bubbles theme-' + themeName;
     var holdMs = (typeof data.holdMs === 'number' && data.holdMs > 0) ? Math.round(data.holdMs) : 0;
-    var bubbleSignature = (data.text || '') + '|' + (isLoading ? '1' : '0') + '|' + themeName + '|' + scaleVal + '|' + layoutMode;
-    // Aynı yan balon metni el sallanmasıyla tekrar geldiyse yeniden çizip titreştirme;
-    // sadece yeni okuma süresi geri sayımı başladıysa mevcut balona ince çubuk ekle.
+    var blockSig = '';
+    if (blocks && blocks.length) {
+      for (var bs = 0; bs < blocks.length; bs++) {
+        var bk = blocks[bs] || {};
+        blockSig += ';' + (bk.msgId || '') + ':' + (bk.side || '') + ':' + (bk.time || '') + ':' + (bk.date || '');
+      }
+    }
+    var bubbleSignature = (data.text || '') + '|' + (isLoading ? '1' : '0') + '|' + themeName + '|' + scaleVal + '|' +
+      layoutMode + '|' + (data.phoneTitle || '') + '|' + (data.phoneSubtitle || '') + '|' + (data.phoneClock || '') + blockSig;
+    // Aynı yan balon içeriği el sallanmasıyla tekrar geldiyse yeniden çizip titreştirme;
+    // sadece yeni okuma süresi geri sayımı başladıysa mevcut ikiz telefona ince çubuk ekle.
     if (el && kind === 'region-bubbles' && el.className === bubbleClass && el.getAttribute('data-bubble-text') === bubbleSignature) {
       if (holdMs > 0 && el.getAttribute('data-hold-started') !== '1') {
         el.setAttribute('data-hold-started', '1');
@@ -1076,8 +1084,9 @@
       }
       return;
     }
-    // Bloklar ve balonlar içerik/tema değişince yeniden dizilir; kip değişince eski kutu kalkar.
-    if (el && (el.className !== (kind === 'region-bubbles' ? bubbleClass : kind) || kind === 'region-blocks' || kind === 'region-bubbles')) {
+    // İkiz telefon açıkken tema/kip aynıysa kasayı YOK ETME: kaydırma (scroll) sırasında içindeki mesajları
+    // yerinde (FLIP diff) güncelleyerek sıfır titreme ve akıcı kayma sağla.
+    if (el && (el.className !== (kind === 'region-bubbles' ? bubbleClass : kind) || kind === 'region-blocks')) {
       hideRegion(id);
       el = null;
     }
@@ -1119,13 +1128,16 @@
     el.style.fontSize = Math.max(REGION_MIN_FONT, Math.min(REGION_MAX_FONT, Math.round(line * 0.9))) + 'px';
   }
 
-  // Okuma süresinde tutulan balonun altına ince geri sayım çubuğu ekler.
+  // Okuma süresinde tutulan ikiz telefonun altına ince geri sayım çubuğu ekler.
   function attachHoldBar(container, holdMs) {
     if (!container || !(holdMs > 0)) return;
-    var items = container.querySelectorAll('.bubble-item');
-    if (!items || !items.length) return;
-    var target = items[items.length - 1];
-    if (target.querySelector('.bubble-hold-track')) return;
+    var target = (container._pm && container._pm.mirror) ? container._pm.mirror : null;
+    if (!target) {
+      var list = container.querySelectorAll ? container.querySelectorAll('.phone-mirror') : null;
+      if (list && list.length) target = list[0];
+    }
+    if (!target) return;
+    if (container._pm && container._pm.holdTrack) return;
     var track = document.createElement('div');
     track.className = 'bubble-hold-track';
     var fill = document.createElement('span');
@@ -1133,23 +1145,193 @@
     fill.style.animationDuration = holdMs + 'ms';
     track.appendChild(fill);
     target.appendChild(track);
+    if (container._pm) container._pm.holdTrack = track;
   }
 
-  // Telefon / yan balon yerleşimi: çeviriler telefon ekranını kapatmaz; telefon sağdaysa hemen solunda, soldaysa hemen
-  // sağında buzlu cam konuşma balonu olarak açılır. Gönderen adı avatarlı vurgulu başlık olur, ana diyalog altyazısıyla
-  // çakışmaz ve yeni çeviri beklenirken zarif buzlu cam nabız göstergesi sunar.
+  function clearHoldBar(pm) {
+    if (!pm || !pm.holdTrack) return;
+    if (pm.holdTrack.parentNode) pm.holdTrack.parentNode.removeChild(pm.holdTrack);
+    pm.holdTrack = null;
+  }
+
+  function ensurePhoneMirror(container) {
+    if (container._pm) return container._pm;
+    var mirror = document.createElement('div');
+    mirror.className = 'phone-mirror';
+    var notch = document.createElement('div');
+    notch.className = 'pm-notch';
+    mirror.appendChild(notch);
+
+    var header = document.createElement('div');
+    header.className = 'pm-header';
+    var statusbar = document.createElement('div');
+    statusbar.className = 'pm-statusbar';
+    var clockEl = document.createElement('span');
+    clockEl.className = 'pm-clock';
+    var statusRight = document.createElement('span');
+    statusRight.className = 'pm-status-right';
+    var trPill = document.createElement('span');
+    trPill.className = 'pm-tr-pill';
+    trPill.textContent = 'TR';
+    var liveDot = document.createElement('span');
+    liveDot.className = 'pm-live-dot';
+    statusRight.appendChild(trPill);
+    statusRight.appendChild(liveDot);
+    statusbar.appendChild(clockEl);
+    statusbar.appendChild(statusRight);
+    header.appendChild(statusbar);
+
+    var contact = document.createElement('div');
+    contact.className = 'pm-contact';
+    var avatarEl = document.createElement('span');
+    avatarEl.className = 'pm-avatar';
+    var titleCol = document.createElement('div');
+    titleCol.className = 'pm-title-col';
+    var titleEl = document.createElement('span');
+    titleEl.className = 'pm-title';
+    var subEl = document.createElement('span');
+    subEl.className = 'pm-subtitle';
+    titleCol.appendChild(titleEl);
+    titleCol.appendChild(subEl);
+    contact.appendChild(avatarEl);
+    contact.appendChild(titleCol);
+    header.appendChild(contact);
+    mirror.appendChild(header);
+
+    var thread = document.createElement('div');
+    thread.className = 'pm-thread';
+    mirror.appendChild(thread);
+
+    var cardBody = document.createElement('div');
+    cardBody.className = 'pm-card-body';
+    cardBody.style.display = 'none';
+    mirror.appendChild(cardBody);
+
+    var shimmer = document.createElement('div');
+    shimmer.className = 'pm-shimmer-wrap';
+    shimmer.style.display = 'none';
+    var s1 = document.createElement('span');
+    s1.className = 'shimmer-line';
+    var s2 = document.createElement('span');
+    s2.className = 'shimmer-line';
+    shimmer.appendChild(s1);
+    shimmer.appendChild(s2);
+    mirror.appendChild(shimmer);
+
+    container.appendChild(mirror);
+    container._pm = {
+      mirror: mirror,
+      header: header,
+      statusbar: statusbar,
+      clockEl: clockEl,
+      avatarEl: avatarEl,
+      titleEl: titleEl,
+      subEl: subEl,
+      thread: thread,
+      cardBody: cardBody,
+      shimmer: shimmer,
+      holdTrack: null,
+      nodesById: {},
+      order: []
+    };
+    return container._pm;
+  }
+
+  function animateBubbleMotion(node, fromY, fromScale, fromOpacity, durationMs) {
+    if (!node || !node.style || typeof window.requestAnimationFrame !== 'function') return;
+    var startT = 'translate3d(0,' + Math.round(fromY) + 'px,0) scale(' + fromScale + ')';
+    node.style.webkitTransition = 'none';
+    node.style.transition = 'none';
+    node.style.webkitTransform = startT;
+    node.style.transform = startT;
+    if (fromOpacity !== null) node.style.opacity = String(fromOpacity);
+    void node.offsetWidth;
+    window.requestAnimationFrame(function () {
+      var ease = 'cubic-bezier(0.22, 1, 0.36, 1)';
+      var tr = '-webkit-transform ' + durationMs + 'ms ' + ease +
+        ', transform ' + durationMs + 'ms ' + ease +
+        ', opacity ' + Math.round(durationMs * 0.85) + 'ms ease-out';
+      node.style.webkitTransition = tr;
+      node.style.transition = tr;
+      node.style.webkitTransform = 'translate3d(0,0,0) scale(1)';
+      node.style.transform = 'translate3d(0,0,0) scale(1)';
+      if (fromOpacity !== null) node.style.opacity = '1';
+    });
+  }
+
+  function buildChatBubble(item, isGrouped) {
+    var node = document.createElement('div');
+    node.className = 'pm-bubble ' + item.side + (isGrouped ? ' grouped' : '');
+    node.setAttribute('data-msg-id', item.msgId);
+
+    var header = document.createElement('div');
+    header.className = 'bubble-header';
+    var avatar = document.createElement('span');
+    avatar.className = 'bubble-avatar';
+    var senderEl = document.createElement('span');
+    senderEl.className = 'bubble-sender';
+    header.appendChild(avatar);
+    header.appendChild(senderEl);
+    node.appendChild(header);
+
+    var bodyEl = document.createElement('span');
+    bodyEl.className = 'bubble-body';
+    node.appendChild(bodyEl);
+
+    var meta = document.createElement('div');
+    meta.className = 'pm-bubble-meta';
+    var timeEl = document.createElement('span');
+    timeEl.className = 'pm-time';
+    var ticksEl = document.createElement('span');
+    ticksEl.className = 'pm-ticks';
+    ticksEl.textContent = '✓✓';
+    meta.appendChild(timeEl);
+    meta.appendChild(ticksEl);
+    node.appendChild(meta);
+
+    node._parts = { header: header, avatar: avatar, senderEl: senderEl, bodyEl: bodyEl, meta: meta, timeEl: timeEl, ticksEl: ticksEl };
+    syncChatBubble(node, item, isGrouped);
+    return node;
+  }
+
+  function syncChatBubble(node, item, isGrouped) {
+    var p = node._parts;
+    node.className = 'pm-bubble ' + item.side + (isGrouped ? ' grouped' : '');
+    var showSender = item.side === 'incoming' && !!item.sender && !isGrouped;
+    p.header.style.display = showSender ? '' : 'none';
+    if (showSender) {
+      var initial = item.sender.charAt(0).toUpperCase();
+      if (p.avatar.textContent !== initial) p.avatar.textContent = initial;
+      p.avatar.style.background = item.senderColor || '#7dd3fc';
+      if (p.senderEl.textContent !== item.sender) p.senderEl.textContent = item.sender;
+      p.senderEl.style.color = item.senderColor || '#7dd3fc';
+    }
+    var bodyKey = item.text + '|' + (item.icons ? item.icons.length : 0);
+    if (node._bodyKey !== bodyKey) {
+      node._bodyKey = bodyKey;
+      fillText(p.bodyEl, item.text, item.icons);
+    }
+    var hasTime = !!item.time;
+    var isOut = item.side === 'outgoing';
+    p.meta.style.display = (hasTime || isOut) ? '' : 'none';
+    if (p.timeEl.textContent !== (item.time || '')) p.timeEl.textContent = item.time || '';
+    p.ticksEl.style.display = isOut ? '' : 'none';
+  }
+
+  // İkiz Türkçe Telefon yerleşimi: oyun içi telefonun hemen yanında gerçekçi cam telefon çerçevesi açar.
+  // Üstte oyun saati + kişi/grup başlığı, içinde solda gelen + sağda giden mesaj baloncukları, balon içi saat
+  // ve kaydırma (scroll) sırasında sıfır titremeli 60 fps FLIP kaydırma animasyonu çalışır.
   function placeSideBubbles(container, data, box, blocks, isLoading, scaleVal, layoutMode, holdMs) {
     var width = window.innerWidth || 1920;
     var height = window.innerHeight || 1080;
     var scale = scaleVal || 1.0;
     var anchor = validBox(data.anchor) || box;
     var onRight = (anchor.left + anchor.right) / 2 > 0.5;
-    var gap = 0.016;
-    var maxW = onRight
-      ? Math.min(width * 0.36, Math.max(width * 0.20, (anchor.left - 0.04) * width))
-      : Math.min(width * 0.36, Math.max(width * 0.20, (0.96 - anchor.right) * width));
+    var gap = 0.015;
+    var availSideW = onRight ? (anchor.left - 0.04) * width : (0.96 - anchor.right) * width;
+    var mirrorW = Math.round(Math.min(width * 0.30, Math.max(width * 0.21, Math.min(availSideW, 540))));
 
-    // Ana diyalog altyazısı ekrandaysa telefon balonları onun üstünde kalır (sıfır çarpışma).
+    // Ana diyalog altyazısı ekrandaysa ikiz telefon onun üstünde kalır (sıfır çarpışma).
     var maxBottom = Math.round(height * 0.94);
     var subEl = $('subtitle');
     if (subEl && subEl.className !== 'hidden' && subEl.offsetHeight > 0) {
@@ -1159,26 +1341,16 @@
       }
     }
 
-    // Henüz metin yok ama telefon algılandı / çevriliyor: zarif buzlu cam shimmer kartı göster.
-    if (!data.text && isLoading) {
-      var loader = document.createElement('div');
-      loader.className = 'bubble-item bubble-loading ' + (onRight ? 'point-right' : 'point-left');
-      if (onRight) {
-        loader.style.right = (Math.max(0.02, 1 - anchor.left + gap) * 100) + '%';
-      } else {
-        loader.style.left = (Math.min(0.80, anchor.right + gap) * 100) + '%';
-      }
-      var l1 = document.createElement('span');
-      l1.className = 'shimmer-line';
-      var l2 = document.createElement('span');
-      l2.className = 'shimmer-line';
-      loader.appendChild(l1);
-      loader.appendChild(l2);
-      var loadTop = Math.min(maxBottom - 64, Math.max(Math.round(height * 0.06), Math.round((anchor.top + (anchor.bottom - anchor.top) * 0.22) * height)));
-      loader.style.top = loadTop + 'px';
-      container.appendChild(loader);
-      return;
+    var pm = ensurePhoneMirror(container);
+    pm.mirror.className = 'phone-mirror ' + (onRight ? 'point-right' : 'point-left');
+    if (onRight) {
+      pm.mirror.style.right = (Math.max(0.02, 1 - anchor.left + gap) * 100) + '%';
+      pm.mirror.style.left = '';
+    } else {
+      pm.mirror.style.left = (Math.min(0.76, anchor.right + gap) * 100) + '%';
+      pm.mirror.style.right = '';
     }
+    pm.mirror.style.width = mirrorW + 'px';
 
     var items = [];
     if (blocks && blocks.length) {
@@ -1186,106 +1358,214 @@
         var b = blocks[i];
         var bBox = validBox(b && b.box) || box;
         if (b && b.text) {
+          var fallbackId = 'i_' + i + '_' + plainText(b.text).slice(0, 24);
           items.push({
-            text: b.text, icons: b.icons, box: bBox, line: b.line || data.line,
-            sender: b.sender || '', senderColor: b.senderColor || ''
+            msgId: b.msgId || fallbackId,
+            side: b.side === 'outgoing' ? 'outgoing' : 'incoming',
+            text: b.text,
+            icons: b.icons,
+            box: bBox,
+            line: b.line || data.line,
+            sender: b.sender || '',
+            senderColor: b.senderColor || '',
+            time: b.time || '',
+            date: b.date || ''
           });
         }
       }
     }
     if (!items.length && data.text) {
-      items.push({ text: data.text, icons: data.icons, box: box, line: data.line, sender: '', senderColor: '' });
+      items.push({
+        msgId: 'single_' + plainText(data.text).slice(0, 24),
+        side: 'incoming',
+        text: data.text,
+        icons: data.icons,
+        box: box,
+        line: data.line,
+        sender: '',
+        senderColor: '',
+        time: '',
+        date: ''
+      });
     }
     items.sort(function (a, b) { return a.box.top - b.box.top; });
 
-    // Uygulama-farkında kart kipi (E-posta / sosyal medya / makale): dağınık küçük kutular yerine tek, zarif okuma kartı.
-    if (layoutMode === 'card' && items.length > 1) {
-      var card = document.createElement('div');
-      card.className = 'bubble-item bubble-card ' + (onRight ? 'point-right' : 'point-left');
+    // Yazı boyunu telefonun satır yüksekliğine ve kullanıcı ölçeğine göre ayarla.
+    var baseLinePx = typeof data.line === 'number' && data.line > 0 ? data.line * height : 26;
+    if (items.length && typeof items[0].line === 'number' && items[0].line > 0) baseLinePx = items[0].line * height;
+    pm.mirror.style.fontSize = Math.max(20, Math.min(34, Math.round(baseLinePx * 0.88 * scale))) + 'px';
+
+    // Üst durum çubuğu (saat) ve sohbet başlığını güncelle (değişmediyse DOM'a dokunma).
+    var titleText = data.phoneTitle || (layoutMode === 'card' ? 'Telefon' : 'Mesajlar');
+    var subText = data.phoneSubtitle || (layoutMode === 'chat' ? 'Canlı çeviri' : '');
+    var clockText = data.phoneClock || '';
+    var accent = data.phoneAccent || (items.length && items[0].senderColor) || '#38bdf8';
+    if (pm.clockEl.textContent !== clockText) pm.clockEl.textContent = clockText;
+    pm.statusbar.style.display = '';
+    var avatarChar = titleText.charAt(0).toUpperCase();
+    if (pm.avatarEl.textContent !== avatarChar) pm.avatarEl.textContent = avatarChar;
+    pm.avatarEl.style.background = accent;
+    if (pm.titleEl.textContent !== titleText) pm.titleEl.textContent = titleText;
+    if (pm.subEl.textContent !== subText) pm.subEl.textContent = subText;
+    pm.subEl.style.display = subText ? '' : 'none';
+
+    // 1) İlk yükleme (henüz metin yok): ikiz telefon içinde zarif buzlu cam shimmer.
+    if (!data.text && isLoading) {
+      pm.thread.style.display = 'none';
+      pm.cardBody.style.display = 'none';
+      pm.shimmer.style.display = '';
+      positionPhoneMirror(pm.mirror, anchor, height, maxBottom);
+      return;
+    }
+
+    pm.shimmer.style.display = 'none';
+    if (holdMs <= 0) clearHoldBar(pm);
+
+    // 2) Kart kipi (E-posta / haber / sosyal medya / uzun not).
+    if (layoutMode === 'card' && items.length > 0 && !items.some(function (it) { return it.side === 'outgoing' || !!it.sender; })) {
+      pm.thread.style.display = 'none';
+      pm.cardBody.style.display = '';
+      pm.cardBody.innerHTML = '';
       for (var c = 0; c < items.length; c++) {
         var part = document.createElement('span');
-        part.className = (c === 0 && items[c].text.length <= 48) ? 'bubble-card-title' : 'bubble-card-part';
+        part.className = (c === 0 && items[c].text.length <= 48 && items.length > 1) ? 'bubble-card-title' : 'bubble-card-part';
         fillText(part, items[c].text, items[c].icons);
-        card.appendChild(part);
+        pm.cardBody.appendChild(part);
       }
       if (isLoading) {
-        var cardDots = document.createElement('span');
-        cardDots.className = 'bubble-more-dots';
-        cardDots.textContent = '•••';
-        card.appendChild(cardDots);
+        var cardTyping = document.createElement('div');
+        cardTyping.className = 'pm-typing';
+        cardTyping.appendChild(document.createElement('i'));
+        cardTyping.appendChild(document.createElement('i'));
+        cardTyping.appendChild(document.createElement('i'));
+        pm.cardBody.appendChild(cardTyping);
       }
-      if (onRight) {
-        card.style.right = (Math.max(0.02, 1 - anchor.left + gap) * 100) + '%';
-      } else {
-        card.style.left = (Math.min(0.80, anchor.right + gap) * 100) + '%';
-      }
-      card.style.maxWidth = Math.round(maxW) + 'px';
-      var cardLinePx = typeof data.line === 'number' && data.line > 0 ? data.line * height : 28;
-      card.style.fontSize = Math.max(19, Math.min(42, Math.round(cardLinePx * 0.94 * scale))) + 'px';
-      container.appendChild(card);
-      var cardH = card.offsetHeight || 120;
-      var cardTop = Math.round(items[0].box.top * height);
-      var cardMinTop = Math.round(height * 0.04);
-      if (cardTop + cardH > maxBottom) cardTop = Math.max(cardMinTop, maxBottom - cardH);
-      card.style.top = Math.max(cardMinTop, cardTop) + 'px';
+      positionPhoneMirror(pm.mirror, anchor, height, maxBottom);
       if (holdMs > 0) attachHoldBar(container, holdMs);
       return;
     }
 
-    var nodes = [];
-    for (var j = 0; j < items.length; j++) {
-      var item = items[j];
-      var node = document.createElement('div');
-      node.className = 'bubble-item ' + (onRight ? 'point-right' : 'point-left');
-      if (j > 0) node.style.animationDelay = Math.min(180, j * 45) + 'ms';
-      if (item.sender) {
-        var header = document.createElement('div');
-        header.className = 'bubble-header';
-        var avatar = document.createElement('span');
-        avatar.className = 'bubble-avatar';
-        avatar.textContent = item.sender.charAt(0).toUpperCase();
-        avatar.style.background = item.senderColor || '#7dd3fc';
-        var senderEl = document.createElement('span');
-        senderEl.className = 'bubble-sender';
-        if (item.senderColor) senderEl.style.color = item.senderColor;
-        senderEl.textContent = item.sender;
-        header.appendChild(avatar);
-        header.appendChild(senderEl);
-        node.appendChild(header);
+    // 3) Gerçekçi Sohbet Akışı (Chat) + Kaydırmaya Duyarlı FLIP Diff:
+    pm.cardBody.style.display = 'none';
+    pm.thread.style.display = '';
+
+    // FLIP "First": mevcut mesaj balonlarının ekrandaki dikey konumlarını kaydet.
+    var oldTops = {};
+    for (var prevId in pm.nodesById) {
+      if (!Object.prototype.hasOwnProperty.call(pm.nodesById, prevId)) continue;
+      var existing = pm.nodesById[prevId];
+      if (existing && typeof existing.getBoundingClientRect === 'function') {
+        var rect = existing.getBoundingClientRect();
+        if (rect && rect.height > 0) oldTops[prevId] = rect.top;
       }
-      var bodyEl = document.createElement('span');
-      bodyEl.className = 'bubble-body';
-      fillText(bodyEl, item.text, item.icons);
-      node.appendChild(bodyEl);
-      if (isLoading && j === items.length - 1) {
-        var dots = document.createElement('span');
-        dots.className = 'bubble-more-dots';
-        dots.textContent = '•••';
-        node.appendChild(dots);
-      }
-      if (onRight) {
-        node.style.right = (Math.max(0.02, 1 - anchor.left + gap) * 100) + '%';
-      } else {
-        node.style.left = (Math.min(0.80, anchor.right + gap) * 100) + '%';
-      }
-      node.style.maxWidth = Math.round(maxW) + 'px';
-      var linePx = typeof item.line === 'number' && item.line > 0 ? item.line * height : 28;
-      node.style.fontSize = Math.max(19, Math.min(42, Math.round(linePx * 0.94 * scale))) + 'px';
-      container.appendChild(node);
-      nodes.push({ node: node, targetTop: Math.round(item.box.top * height) });
     }
 
-    var minTop = Math.round(height * 0.04);
-    var nextTop = minTop;
-    for (var k = 0; k < nodes.length; k++) {
-      var entry = nodes[k];
-      var h = entry.node.offsetHeight || 58;
-      var top = Math.max(nextTop, entry.targetTop);
-      if (top + h > maxBottom) top = Math.max(minTop, maxBottom - h);
-      entry.node.style.top = top + 'px';
-      nextTop = top + h + 12;
+    // Kaydırma yönünü anla: yeni mesaj alttan mı girdi (+1, aşağı kaydırma) yoksa üstten mi (-1, yukarı kaydırma)?
+    var newOrder = [];
+    var newSet = {};
+    for (var n = 0; n < items.length; n++) {
+      // Aynı mesaj iki kez arka arkaya gelirse kimliği benzersizleştir.
+      var uid = items[n].msgId;
+      if (newSet[uid]) uid = uid + '_' + n;
+      items[n].msgId = uid;
+      newSet[uid] = true;
+      newOrder.push(uid);
     }
+    var prevSet = {};
+    for (var po = 0; po < pm.order.length; po++) prevSet[pm.order[po]] = true;
+    var scrollDir = 1;
+    if (pm.order.length > 0 && newOrder.length > 0) {
+      var topIsNew = !prevSet[newOrder[0]];
+      var bottomIsNew = !prevSet[newOrder[newOrder.length - 1]];
+      if (topIsNew && !bottomIsNew) scrollDir = -1;
+    }
+
+    // Artık ekrandan çıkan balonları temizle, tarih ayırıcı ve yazıyor göstergesini sıfırla.
+    for (var delId in pm.nodesById) {
+      if (Object.prototype.hasOwnProperty.call(pm.nodesById, delId) && !newSet[delId]) {
+        var dead = pm.nodesById[delId];
+        if (dead && dead.parentNode) dead.parentNode.removeChild(dead);
+        delete pm.nodesById[delId];
+      }
+    }
+    var extras = pm.thread.querySelectorAll ? pm.thread.querySelectorAll('.pm-date-pill, .pm-typing') : [];
+    for (var ex = 0; ex < extras.length; ex++) {
+      if (extras[ex].parentNode) extras[ex].parentNode.removeChild(extras[ex]);
+    }
+
+    // Hayatta kalan düğümleri yerlerinde koruyarak yeni sıraya diz; yeni girenleri oluştur.
+    var newNodes = [];
+    var survivingNodes = [];
+    var lastDateShown = '';
+    for (var j = 0; j < items.length; j++) {
+      var item = items[j];
+      if (item.date && item.date !== lastDateShown) {
+        lastDateShown = item.date;
+        var pill = document.createElement('div');
+        pill.className = 'pm-date-pill';
+        pill.textContent = item.date;
+        pm.thread.appendChild(pill);
+      }
+      var prevItem = j > 0 ? items[j - 1] : null;
+      var isGrouped = item.side === 'incoming' && !!item.sender && !!prevItem &&
+        prevItem.side === 'incoming' && prevItem.sender === item.sender && !item.date;
+
+      var node = pm.nodesById[item.msgId];
+      if (node) {
+        syncChatBubble(node, item, isGrouped);
+        pm.thread.appendChild(node);
+        survivingNodes.push({ id: item.msgId, node: node });
+      } else {
+        node = buildChatBubble(item, isGrouped);
+        pm.nodesById[item.msgId] = node;
+        pm.thread.appendChild(node);
+        newNodes.push(node);
+      }
+    }
+
+    if (isLoading) {
+      var typing = document.createElement('div');
+      typing.className = 'pm-typing';
+      typing.appendChild(document.createElement('i'));
+      typing.appendChild(document.createElement('i'));
+      typing.appendChild(document.createElement('i'));
+      pm.thread.appendChild(typing);
+    }
+
+    pm.order = newOrder;
+    positionPhoneMirror(pm.mirror, anchor, height, maxBottom);
+
+    // FLIP "Last / Invert / Play": kaydırmada yer değiştiren eski mesajlar yumuşakça kayar, yeni girenler
+    // kaydırma yönünden süzülerek eklenir (sıfır titreme).
+    for (var s = 0; s < survivingNodes.length; s++) {
+      var entry = survivingNodes[s];
+      var prevY = oldTops[entry.id];
+      if (prevY !== undefined && typeof entry.node.getBoundingClientRect === 'function') {
+        var nowRect = entry.node.getBoundingClientRect();
+        if (nowRect && nowRect.height > 0) {
+          var dy = prevY - nowRect.top;
+          if (Math.abs(dy) >= 3 && Math.abs(dy) <= 420) {
+            animateBubbleMotion(entry.node, dy, 1, null, 240);
+          }
+        }
+      }
+    }
+    for (var nn = 0; nn < newNodes.length; nn++) {
+      animateBubbleMotion(newNodes[nn], scrollDir * 24, 0.96, 0, 260);
+    }
+
     if (holdMs > 0) attachHoldBar(container, holdMs);
+  }
+
+  function positionPhoneMirror(mirror, anchor, height, maxBottom) {
+    var minTop = Math.round(height * 0.04);
+    var availH = Math.max(240, maxBottom - minTop);
+    var desiredMaxH = Math.round(Math.min(availH, Math.max(height * 0.56, (anchor.bottom - anchor.top) * height * 1.15)));
+    mirror.style.maxHeight = desiredMaxH + 'px';
+    var h = mirror.offsetHeight || Math.min(desiredMaxH, 320);
+    var top = Math.max(minTop, Math.round(anchor.top * height));
+    if (top + h > maxBottom) top = Math.max(minTop, maxBottom - h);
+    mirror.style.top = top + 'px';
   }
 
   function hideRegion(id) {

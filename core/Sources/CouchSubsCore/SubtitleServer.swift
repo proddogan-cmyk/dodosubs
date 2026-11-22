@@ -104,7 +104,9 @@ public enum SubtitleEvent: Equatable, Sendable {
     /// "Ekranı çevir" çevirileri kaldırıldı.
     case screenClear
     /// Ek alanın (görev, telefon, bildirim) çevirisi; `text` boşsa o alanın kutusu kalkar.
-    case region(id: String, text: String, box: TextBox?, presentation: RegionPresentation = .overlay, theme: BubbleTheme = .appleGlass)
+    case region(id: String, text: String, box: TextBox?, presentation: RegionPresentation = .overlay,
+                theme: BubbleTheme = .appleGlass, blocks: [ScreenTranslation.Item]? = nil,
+                options: BubbleOptions = BubbleOptions())
     /// Bütün ek alan kutuları kalktı (çeviri durdu).
     case regionClear
 }
@@ -260,6 +262,10 @@ public final class SubtitleServer: @unchecked Sendable {
         if let icons = item.icons, !icons.isEmpty { result["icons"] = Self.json(icons) }
         if let sender = item.sender, !sender.isEmpty { result["sender"] = sender }
         if let senderColor = item.senderColor, !senderColor.isEmpty { result["senderColor"] = senderColor }
+        if let msgId = item.msgId, !msgId.isEmpty { result["msgId"] = msgId }
+        if let side = item.side { result["side"] = side.rawValue }
+        if let timestamp = item.timestamp, !timestamp.isEmpty { result["time"] = timestamp }
+        if let dateLabel = item.dateLabel, !dateLabel.isEmpty { result["date"] = dateLabel }
         return result
     }
 
@@ -344,9 +350,16 @@ public final class SubtitleServer: @unchecked Sendable {
             if let anchor { json["anchor"] = Self.json(anchor) }
             if options.loading { json["loading"] = true }
             if let holdMs = options.holdMs, holdMs > 0 { json["holdMs"] = holdMs }
+            if let header = options.phoneHeader {
+                if let title = header.title, !title.isEmpty { json["phoneTitle"] = title }
+                if let subtitle = header.subtitle, !subtitle.isEmpty { json["phoneSubtitle"] = subtitle }
+                if let clock = header.clock, !clock.isEmpty { json["phoneClock"] = clock }
+                if let accent = header.accentColor, !accent.isEmpty { json["phoneAccent"] = accent }
+            }
         }
         broadcast(event: "region", json: json)
-        onEvent?(.region(id: id, text: text, box: box, presentation: presentation, theme: options.theme))
+        onEvent?(.region(id: id, text: text, box: box, presentation: presentation, theme: options.theme,
+                         blocks: text.isEmpty ? nil : blocks, options: options))
     }
 
     /// Bütün ek alan kutularını kaldırır.
