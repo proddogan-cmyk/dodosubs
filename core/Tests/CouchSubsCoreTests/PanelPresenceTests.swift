@@ -535,4 +535,20 @@ final class PanelPresenceTests: XCTestCase {
         await watcher.pass(phoneImage(background: 0.6, screen: 0.9, messageBars: 2, barShade: 0.25), areas: [phone])
         XCTAssertEqual(translator.calls.count, 3, "Yukarı geri kaydırınca bellekteki mesajlar tekrar çevrilmemeli")
     }
+
+    func testRelativeColumnDetectsOutgoingEvenWithLooseOffCenterCrop() {
+        let region = ExtraAreaPreset.phone.region
+        // Kullanıcı telefon kutusunu geniş/sola kayık çizmiş (sohbet sütunu 0.04...0.78 arasında).
+        let raw = [
+            TextLine("Lucia", box: TextBox(left: 0.04, top: 0.20, right: 0.20, bottom: 0.24)),
+            TextLine("Where are we meeting tonight?", box: TextBox(left: 0.04, top: 0.25, right: 0.56, bottom: 0.31)),
+            // 2 satırlık giden cevap: sütunun solundan belirgin boşluklu (0.20) ve sağ kenarına (0.78) tam yaslı!
+            TextLine("Down by the south pier,", box: TextBox(left: 0.20, top: 0.40, right: 0.78, bottom: 0.45)),
+            TextLine("bring the spare keys with you.", box: TextBox(left: 0.20, top: 0.46, right: 0.78, bottom: 0.51)),
+        ]
+        let parsed = PhoneContent.parse(rawLines: raw, in: region, activeSubtitle: nil)
+        XCTAssertEqual(parsed.messages.count, 2)
+        XCTAssertEqual(parsed.messages[0].side, .incoming)
+        XCTAssertEqual(parsed.messages[1].side, .outgoing, "Göreceli sütun hizası 2 satırlık giden mesajı yakalamalı")
+    }
 }

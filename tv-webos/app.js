@@ -6,7 +6,7 @@
   'use strict';
 
   // TV uygulamasının sürümü: appinfo.json, tv-tizen/config.xml ve tv-android/app/build.gradle ile aynı tutulur.
-  var APP_VERSION = '0.9.64';
+  var APP_VERSION = '0.9.65';
   var t = window.t;
   var config = window.COUCHSUBS_CONFIG || {};
   var platform = window.COUCHSUBS_PLATFORM;
@@ -1044,9 +1044,24 @@
   // hepsini kaldırır. Ana altyazıya dokunulmaz.
 
   var regionBoxes = {};
+  var regionExitTimers = {};
   var REGION_PAD = 0.004;
   var REGION_MIN_FONT = 18;
   var REGION_MAX_FONT = 44;
+
+  function cancelRegionExit(id) {
+    if (!regionExitTimers[id]) return;
+    clearTimeout(regionExitTimers[id]);
+    delete regionExitTimers[id];
+    var el = regionBoxes[id];
+    if (el && el._pm && el._pm.mirror && el._pm.mirror.style) {
+      el._pm.mirror.style.webkitTransition = '';
+      el._pm.mirror.style.transition = '';
+      el._pm.mirror.style.webkitTransform = '';
+      el._pm.mirror.style.transform = '';
+      el._pm.mirror.style.opacity = '';
+    }
+  }
 
   function showRegion(data) {
     var id = data && typeof data.id === 'string' ? data.id : '';
@@ -1055,7 +1070,8 @@
     var isBubble = data.style === 'sideBubble';
     var isLoading = isBubble && data.loading === true;
     var anchorBox = validBox(data.anchor) || box;
-    if ((!data.text && !isLoading) || !anchorBox) return hideRegion(id);
+    if ((!data.text && !isLoading) || !anchorBox) return hideRegion(id, false);
+    cancelRegionExit(id);
     // Alanda ayrı duran yazı grupları (görev başlığı ve ayrı sütundaki hedef) kendi yerleriyle gelir: her biri "ekranı
     // çevir"deki gibi kendi İngilizce yazısının üstüne konur. Bloksuz olayda alanın çevirisi tek kutuda kalır.
     var blocks = Array.isArray(data.blocks) ? data.blocks : null;
@@ -1087,7 +1103,7 @@
     // İkiz telefon açıkken tema/kip aynıysa kasayı YOK ETME: kaydırma (scroll) sırasında içindeki mesajları
     // yerinde (FLIP diff) güncelleyerek sıfır titreme ve akıcı kayma sağla.
     if (el && (el.className !== (kind === 'region-bubbles' ? bubbleClass : kind) || kind === 'region-blocks')) {
-      hideRegion(id);
+      hideRegion(id, true);
       el = null;
     }
     if (!el) {
@@ -1198,14 +1214,17 @@
     header.appendChild(contact);
     mirror.appendChild(header);
 
+    var bodyWrap = document.createElement('div');
+    bodyWrap.className = 'pm-body-wrap';
+
     var thread = document.createElement('div');
     thread.className = 'pm-thread';
-    mirror.appendChild(thread);
+    bodyWrap.appendChild(thread);
 
     var cardBody = document.createElement('div');
     cardBody.className = 'pm-card-body';
     cardBody.style.display = 'none';
-    mirror.appendChild(cardBody);
+    bodyWrap.appendChild(cardBody);
 
     var shimmer = document.createElement('div');
     shimmer.className = 'pm-shimmer-wrap';
@@ -1216,7 +1235,20 @@
     s2.className = 'shimmer-line';
     shimmer.appendChild(s1);
     shimmer.appendChild(s2);
-    mirror.appendChild(shimmer);
+    bodyWrap.appendChild(shimmer);
+
+    var scrollThumb = document.createElement('div');
+    scrollThumb.className = 'pm-scroll-thumb';
+    bodyWrap.appendChild(scrollThumb);
+
+    mirror.appendChild(bodyWrap);
+
+    var footer = document.createElement('div');
+    footer.className = 'pm-footer';
+    var homeBar = document.createElement('div');
+    homeBar.className = 'pm-home-bar';
+    footer.appendChild(homeBar);
+    mirror.appendChild(footer);
 
     container.appendChild(mirror);
     container._pm = {
@@ -1227,14 +1259,28 @@
       avatarEl: avatarEl,
       titleEl: titleEl,
       subEl: subEl,
+      bodyWrap: bodyWrap,
       thread: thread,
       cardBody: cardBody,
       shimmer: shimmer,
+      scrollThumb: scrollThumb,
+      scrollThumbTimer: null,
       holdTrack: null,
+      onRight: true,
       nodesById: {},
       order: []
     };
     return container._pm;
+  }
+
+  function pulseScrollThumb(pm, dir) {
+    if (!pm || !pm.scrollThumb) return;
+    clearTimeout(pm.scrollThumbTimer);
+    pm.scrollThumb.style.top = dir < 0 ? '18%' : '62%';
+    pm.scrollThumb.className = 'pm-scroll-thumb active';
+    pm.scrollThumbTimer = setTimeout(function () {
+      if (pm.scrollThumb) pm.scrollThumb.className = 'pm-scroll-thumb';
+    }, 650);
   }
 
   function animateBubbleMotion(node, fromY, fromScale, fromOpacity, durationMs) {
@@ -1342,6 +1388,7 @@
     }
 
     var pm = ensurePhoneMirror(container);
+    pm.onRight = onRight;
     pm.mirror.className = 'phone-mirror ' + (onRight ? 'point-right' : 'point-left');
     if (onRight) {
       pm.mirror.style.right = (Math.max(0.02, 1 - anchor.left + gap) * 100) + '%';
@@ -1393,7 +1440,8 @@
     // Yazı boyunu telefonun satır yüksekliğine ve kullanıcı ölçeğine göre ayarla.
     var baseLinePx = typeof data.line === 'number' && data.line > 0 ? data.line * height : 26;
     if (items.length && typeof items[0].line === 'number' && items[0].line > 0) baseLinePx = items[0].line * height;
-    pm.mirror.style.fontSize = Math.max(20, Math.min(34, Math.round(baseLinePx * 0.88 * scale))) + 'px';
+    var startFontPx = Math.max(20, Math.min(34, Math.round(baseLinePx * 0.88 * scale)));
+    pm.mirror.style.fontSize = startFontPx + 'px';
 
     // Üst durum çubuğu (saat) ve sohbet başlığını güncelle (değişmediyse DOM'a dokunma).
     var titleText = data.phoneTitle || (layoutMode === 'card' ? 'Telefon' : 'Mesajlar');
@@ -1414,7 +1462,7 @@
       pm.thread.style.display = 'none';
       pm.cardBody.style.display = 'none';
       pm.shimmer.style.display = '';
-      positionPhoneMirror(pm.mirror, anchor, height, maxBottom);
+      fitAndPositionPhoneMirror(pm, anchor, height, maxBottom, startFontPx, 1);
       return;
     }
 
@@ -1440,7 +1488,7 @@
         cardTyping.appendChild(document.createElement('i'));
         pm.cardBody.appendChild(cardTyping);
       }
-      positionPhoneMirror(pm.mirror, anchor, height, maxBottom);
+      fitAndPositionPhoneMirror(pm, anchor, height, maxBottom, startFontPx, 1);
       if (holdMs > 0) attachHoldBar(container, holdMs);
       return;
     }
@@ -1532,11 +1580,13 @@
       pm.thread.appendChild(typing);
     }
 
+    var hadPriorOrder = pm.order.length > 0;
     pm.order = newOrder;
-    positionPhoneMirror(pm.mirror, anchor, height, maxBottom);
+    fitAndPositionPhoneMirror(pm, anchor, height, maxBottom, startFontPx, scrollDir);
 
     // FLIP "Last / Invert / Play": kaydırmada yer değiştiren eski mesajlar yumuşakça kayar, yeni girenler
     // kaydırma yönünden süzülerek eklenir (sıfır titreme).
+    var didScrollMove = false;
     for (var s = 0; s < survivingNodes.length; s++) {
       var entry = survivingNodes[s];
       var prevY = oldTops[entry.id];
@@ -1546,6 +1596,7 @@
           var dy = prevY - nowRect.top;
           if (Math.abs(dy) >= 3 && Math.abs(dy) <= 420) {
             animateBubbleMotion(entry.node, dy, 1, null, 240);
+            didScrollMove = true;
           }
         }
       }
@@ -1553,31 +1604,87 @@
     for (var nn = 0; nn < newNodes.length; nn++) {
       animateBubbleMotion(newNodes[nn], scrollDir * 24, 0.96, 0, 260);
     }
+    if (hadPriorOrder && (didScrollMove || newNodes.length > 0)) {
+      pulseScrollThumb(pm, scrollDir);
+    }
 
     if (holdMs > 0) attachHoldBar(container, holdMs);
   }
 
-  function positionPhoneMirror(mirror, anchor, height, maxBottom) {
+  // Türkçe uzun mesajlarda taşma/kesilme koruması: sığmazsa yazıyı 17 px'e kadar nazikçe küçültür,
+  // yine de sığmazsa en yeni mesajı görünür tutacak biçimde hizalar ve üst/alt cam geçiş maskesini açar.
+  function fitAndPositionPhoneMirror(pm, anchor, height, maxBottom, startFontPx, scrollDir) {
+    var mirror = pm.mirror;
     var minTop = Math.round(height * 0.04);
     var availH = Math.max(240, maxBottom - minTop);
-    var desiredMaxH = Math.round(Math.min(availH, Math.max(height * 0.56, (anchor.bottom - anchor.top) * height * 1.15)));
+    var desiredMaxH = Math.round(Math.min(availH, Math.max(height * 0.58, (anchor.bottom - anchor.top) * height * 1.18)));
     mirror.style.maxHeight = desiredMaxH + 'px';
+
+    var fontSize = startFontPx || 24;
+    if (pm.thread && pm.thread.style.display !== 'none' && pm.thread.scrollHeight > 0) {
+      while (fontSize > 17 && (mirror.scrollHeight > desiredMaxH + 2 || (pm.thread.clientHeight > 0 && pm.thread.scrollHeight > pm.thread.clientHeight + 2))) {
+        fontSize -= 1;
+        mirror.style.fontSize = fontSize + 'px';
+      }
+      var overflows = pm.thread.clientHeight > 0 && pm.thread.scrollHeight > pm.thread.clientHeight + 3;
+      pm.thread.className = overflows ? 'pm-thread has-overflow' : 'pm-thread';
+      if (overflows) {
+        pm.thread.scrollTop = scrollDir < 0 ? 0 : pm.thread.scrollHeight;
+      }
+    } else if (pm.cardBody && pm.cardBody.style.display !== 'none' && mirror.scrollHeight > 0) {
+      while (fontSize > 17 && mirror.scrollHeight > desiredMaxH + 2) {
+        fontSize -= 1;
+        mirror.style.fontSize = fontSize + 'px';
+      }
+    }
+
     var h = mirror.offsetHeight || Math.min(desiredMaxH, 320);
     var top = Math.max(minTop, Math.round(anchor.top * height));
     if (top + h > maxBottom) top = Math.max(minTop, maxBottom - h);
     mirror.style.top = top + 'px';
   }
 
-  function hideRegion(id) {
+  function removeRegionNow(id) {
+    delete regionExitTimers[id];
     var el = regionBoxes[id];
     if (!el) return;
+    if (el._pm) clearTimeout(el._pm.scrollThumbTimer);
     delete regionBoxes[id];
     $('regions').removeChild(el);
   }
 
+  // Telefon kapanırken (immediate=false ve gerçek TV tarayıcısı) 240 ms aşağı-yana süzülerek kapanır.
+  function hideRegion(id, immediate) {
+    var el = regionBoxes[id];
+    if (!el) return;
+    cancelRegionExit(id);
+    if (immediate || !el._pm || !el._pm.mirror || typeof window.requestAnimationFrame !== 'function') {
+      removeRegionNow(id);
+      return;
+    }
+    var mirror = el._pm.mirror;
+    var dx = el._pm.onRight ? 12 : -12;
+    var ease = 'cubic-bezier(0.4, 0, 0.2, 1)';
+    var tr = '-webkit-transform 240ms ' + ease + ', transform 240ms ' + ease + ', opacity 240ms ' + ease;
+    mirror.style.webkitTransition = tr;
+    mirror.style.transition = tr;
+    mirror.style.webkitTransform = 'translate3d(' + dx + 'px,18px,0) scale(0.96)';
+    mirror.style.transform = 'translate3d(' + dx + 'px,18px,0) scale(0.96)';
+    mirror.style.opacity = '0';
+    regionExitTimers[id] = setTimeout(function () { removeRegionNow(id); }, 240);
+  }
+
   function hideRegions() {
+    for (var tid in regionExitTimers) {
+      if (Object.prototype.hasOwnProperty.call(regionExitTimers, tid)) clearTimeout(regionExitTimers[tid]);
+    }
+    regionExitTimers = {};
     for (var id in regionBoxes) {
-      if (Object.prototype.hasOwnProperty.call(regionBoxes, id)) $('regions').removeChild(regionBoxes[id]);
+      if (Object.prototype.hasOwnProperty.call(regionBoxes, id)) {
+        var el = regionBoxes[id];
+        if (el._pm) clearTimeout(el._pm.scrollThumbTimer);
+        $('regions').removeChild(el);
+      }
     }
     regionBoxes = {};
     $('regions').className = 'hidden';

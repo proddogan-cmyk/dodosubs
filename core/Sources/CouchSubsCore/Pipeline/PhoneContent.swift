@@ -306,15 +306,17 @@ public enum PhoneContent {
 
     /// İki satır aynı mesaj balonuna mı ait (dikey yakınlık + aynı yatay taraf + arada zaman damgası olmaması).
     private static func sameBubbleAlignment(_ a: TextBox, _ b: TextBox) -> Bool {
-        let aRight = a.left >= 0.24 && a.right >= 0.72 && (a.left + a.right) / 2 >= 0.56 && (a.right - a.left) <= 0.72
-        let bRight = b.left >= 0.24 && b.right >= 0.72 && (b.left + b.right) / 2 >= 0.56 && (b.right - b.left) <= 0.72
+        let aRight = a.left >= 0.24 && a.right >= 0.72 && (a.left + a.right) / 2 >= 0.56 && (a.right - a.left) <= 0.75
+        let bRight = b.left >= 0.24 && b.right >= 0.72 && (b.left + b.right) / 2 >= 0.56 && (b.right - b.left) <= 0.75
         if aRight != bRight { return false }
-        // İki satır birbirinin tam tersi tarafta küçük kutularsa (ör. sol 0.08..0.45 ve sağ 0.48..0.92) birleştirme.
-        if abs(a.left - b.left) > 0.22 && abs(a.right - b.right) > 0.22 { return false }
+        // İki satır birbirine göre hem sol hem sağ kenardan belirgin biçimde ters yana kaymışsa ayrı baloncuktur.
+        if (b.left - a.left >= 0.14 && b.right - a.right >= 0.14) || (a.left - b.left >= 0.14 && a.right - b.right >= 0.14) {
+            return false
+        }
         return true
     }
 
-    private static func detectSide(sender: String?, localBoxes: [TextBox]) -> BubbleSide {
+    private static func detectSide(sender: String?, localBoxes: [TextBox], colLeft: Double, colRight: Double) -> BubbleSide {
         // Gönderen başlığı olan baloncuklar karşı taraftan (gelen) gelir.
         if sender != nil { return .incoming }
         guard !localBoxes.isEmpty else { return .incoming }
@@ -322,9 +324,20 @@ public enum PhoneContent {
         let maxRight = localBoxes.map(\.right).max() ?? 1
         let centerX = (minLeft + maxRight) / 2
         let span = maxRight - minLeft
-        // Sağ tarafa belirgin biçimde yaslanmış mesajlar oyuncunun gönderdiği (giden) baloncuktur.
-        if minLeft >= 0.24 && maxRight >= 0.72 && centerX >= 0.56 && span <= 0.72 {
+        // 1) Mutlak sağ hizalama (ekranda tek mesaj varken bile çalışır).
+        if minLeft >= 0.24 && maxRight >= 0.72 && centerX >= 0.56 && span <= 0.75 {
             return .outgoing
+        }
+        // 2) Göreceli sohbet sütunu hizalaması: telefon kırpma kutusu geniş/kayık çizilmişse veya 2 satırlı giden
+        //    mesaj biraz genişse bile sütunun sağ kenarına yaslanıp soldan boşluk bırakan balonlar giden sayılır.
+        let colWidth = colRight - colLeft
+        if colWidth >= 0.35 {
+            let relLeft = (minLeft - colLeft) / colWidth
+            let relRight = (maxRight - colLeft) / colWidth
+            let relSpan = relRight - relLeft
+            if relLeft >= 0.16 && relRight >= 0.90 && relSpan <= 0.84 {
+                return .outgoing
+            }
         }
         return .incoming
     }
@@ -354,7 +367,7 @@ public enum PhoneContent {
         let fallbackBox = TextBox(left: region.left, top: region.top, right: region.right, bottom: region.bottom)
 
         // Satırları dikey boşluğa, yatay hizaya, aradaki saat/tarihe veya yeni gönderen başlığına göre grupla.
-        var groups: [(sender: String?, lines: [TextLine], inlineTime: String?)] = []
+        var groups: [(sender: String?, senderBox: TextBox?, lines: [TextLine], inlineTime: String?)] = []
         var pendingSender: String?
         var pendingSenderBox: TextBox?
 
@@ -376,7 +389,7 @@ public enum PhoneContent {
             if let inlineSender = inline.sender {
                 var bodyLine = line
                 bodyLine.text = inline.body
-                groups.append((sender: inlineSender, lines: [bodyLine], inlineTime: splitTime.time))
+                groups.append((sender: inlineSender, senderBox: nil, lines: [bodyLine], inlineTime: splitTime.time))
                 pendingSender = nil
                 pendingSenderBox = nil
                 continue
@@ -389,17 +402,14 @@ public enum PhoneContent {
                     return (lBox.top - sBox.bottom) <= senderHeight * 1.35
                 }()
                 if isCloseToBody {
-                    var first = line
-                    if let sBox = pendingSenderBox, let lBox = line.box {
-                        first.box = sBox.union(lBox)
-                    }
-                    groups.append((sender: sender, lines: [first], inlineTime: splitTime.time))
+                    // Gönderen kutusunu gövde satırının yüksekliğine ekleme: satır aralığı hesabı bozulmasın.
+                    groups.append((sender: sender, senderBox: pendingSenderBox, lines: [line], inlineTime: splitTime.time))
                     pendingSender = nil
                     pendingSenderBox = nil
                     continue
                 } else {
                     // Arada büyük boşluk varsa üstteki satır sohbet göndereni değil, kart/e-posta başlığıdır.
-                    groups.append((sender: nil, lines: [TextLine(sender, box: pendingSenderBox)], inlineTime: nil))
+                    groups.append((sender: nil, senderBox: nil, lines: [TextLine(sender, box: pendingSenderBox)], inlineTime: nil))
                     pendingSender = nil
                     pendingSenderBox = nil
                 }
@@ -418,19 +428,24 @@ public enum PhoneContent {
                     continue
                 }
             }
-            groups.append((sender: nil, lines: [line], inlineTime: splitTime.time))
+            groups.append((sender: nil, senderBox: nil, lines: [line], inlineTime: splitTime.time))
         }
 
         // Sonda yalnız kalmış bir gönderen/başlık varsa (ör. rehber/menü adı) kaybolmasın.
         if let lone = pendingSender {
-            groups.append((sender: nil, lines: [TextLine(lone, box: pendingSenderBox)], inlineTime: nil))
+            groups.append((sender: nil, senderBox: nil, lines: [TextLine(lone, box: pendingSenderBox)], inlineTime: nil))
         }
+
+        let allBoxes = groups.flatMap { $0.lines.compactMap(\.box) }
+        let colLeft = allBoxes.map(\.left).min() ?? 0.08
+        let colRight = allBoxes.map(\.right).max() ?? 0.92
 
         var built = groups.map { group -> BuiltGroup in
             let localBoxes = group.lines.compactMap(\.box)
-            let localUnion = localBoxes.dropFirst().reduce(localBoxes.first) { $0?.union($1) }
-            let side = detectSide(sender: group.sender, localBoxes: localBoxes)
-            let msg = buildMessage(group.sender, side: side, inlineTime: group.inlineTime,
+            let bodyUnion = localBoxes.dropFirst().reduce(localBoxes.first) { $0?.union($1) }
+            let localUnion = group.senderBox.flatMap { sb in bodyUnion.map { sb.union($0) } ?? sb } ?? bodyUnion
+            let side = detectSide(sender: group.sender, localBoxes: localBoxes, colLeft: colLeft, colRight: colRight)
+            let msg = buildMessage(group.sender, senderBox: group.senderBox, side: side, inlineTime: group.inlineTime,
                                    group.lines, place: place, regionHeight: regionHeight, fallbackBox: fallbackBox)
             return BuiltGroup(message: msg, localBox: localUnion)
         }
@@ -567,12 +582,14 @@ public enum PhoneContent {
         return Parsed(layout: layout, header: header, messages: messages)
     }
 
-    private static func buildMessage(_ sender: String?, side: BubbleSide, inlineTime: String?,
+    private static func buildMessage(_ sender: String?, senderBox: TextBox?, side: BubbleSide, inlineTime: String?,
                                      _ lines: [TextLine], place: TextBox,
                                      regionHeight: Double, fallbackBox: TextBox) -> Message {
         let body = ScreenTranslation.paragraphs(lines).joined(separator: "\n")
         let boxes = lines.compactMap(\.box)
-        let box = boxes.dropFirst().reduce(boxes.first) { $0?.union($1) }?.placed(in: place) ?? fallbackBox
+        let bodyUnion = boxes.dropFirst().reduce(boxes.first) { $0?.union($1) }
+        let combined = senderBox.flatMap { sb in bodyUnion.map { sb.union($0) } ?? sb } ?? bodyUnion
+        let box = combined?.placed(in: place) ?? fallbackBox
         let heights = boxes.map { ($0.bottom - $0.top) * regionHeight }.sorted()
         let lineHeight = heights.isEmpty ? (0.04 * regionHeight) : heights[heights.count / 2]
         let color = sender.map(colorHex(forSender:))
