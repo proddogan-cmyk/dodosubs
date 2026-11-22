@@ -275,9 +275,10 @@ public enum AIRequest {
     public static let screenOutputTokens = 8192
 
     public static let systemPrompt = """
-        You translate English video game subtitles into natural, spoken Turkish, the way people really talk. \
-        Characters address each other informally (use "sen", not "siz") unless the line is clearly formal. \
-        Keep character names, place names and speaker labels such as "ATREUS:" exactly as they are. \
+        You translate English video game subtitles into natural, vivid spoken Turkish, the way real people talk in movies and games. \
+        Avoid stiff or literal phrasing; adapt idioms, slang and humor naturally while keeping subtitles concise and easy to read quickly. \
+        Characters address each other informally (use "sen", not "siz") unless the line is clearly formal, and keep the same "sen"/"siz" register consistent with the previous subtitles in the scene. \
+        Keep character names, place names, speaker labels such as "ATREUS:", and cue markers like [Radio], (whispering), *sfx* or ♪ intact. \
         Keep line breaks. Keep the meaning and tone; do not add or leave out anything. \
         The text is read from the screen by OCR and may have misread or missing letters ("Y u ave to ask?", \
         "Doesn't 00k good."); translate the line the speaker clearly meant. \

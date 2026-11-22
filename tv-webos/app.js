@@ -6,7 +6,7 @@
   'use strict';
 
   // TV uygulamasının sürümü: appinfo.json, tv-tizen/config.xml ve tv-android/app/build.gradle ile aynı tutulur.
-  var APP_VERSION = '0.9.62';
+  var APP_VERSION = '0.9.63';
   var t = window.t;
   var config = window.COUCHSUBS_CONFIG || {};
   var platform = window.COUCHSUBS_PLATFORM;
@@ -556,12 +556,102 @@
     return { text: wrapBalance(words, Math.min(lines, words.length)), scale: scale };
   }
 
+  // Çift kişili diyaloglarda (- Nereye? / - Eve.) sinema standardı en-dash (– ) ve sola hizalama.
+  function isTwoSpeakerDialogue(text) {
+    if (!text || text.indexOf('\n') < 0) return false;
+    var parts = text.split('\n');
+    var dashed = 0;
+    for (var i = 0; i < parts.length; i++) {
+      if (/^\s*[-–—]\s+\S/.test(parts[i])) dashed++;
+    }
+    return dashed >= 2;
+  }
+
+  function polishTypography(text) {
+    if (!text) return text;
+    if (text.indexOf('\n') >= 0 && isTwoSpeakerDialogue(text)) {
+      return text.replace(/(^|\n)\s*-\s+/g, '$1– ');
+    }
+    return text;
+  }
+
+  var RICH_MARKER_RE = /[\[\(\*♪♫]/;
+  var VOICE_TAG_RE = /(radyo|telsiz|radio|intercom|hoparlör|telefon|phone|fısıld|whisper|mırıldan|dış ses|anons|pa\b|tv\b|kayıt)/i;
+
+  function canRenderRichDom() {
+    try {
+      var probe = document.createTextNode('x');
+      return probe && probe.nodeValue === 'x';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // [Radyo], (Fısıldayarak), *Siren sesi*, ♪ şarkı sözü ♪ kalıplarını sinema standardı italik/gümüş/altın
+  // biçimde DOM düğümleriyle işler (innerHTML kullanmaz, düz metinde sıfır ek maliyet).
+  function renderRichSubtitle(el, text) {
+    if (!RICH_MARKER_RE.test(text) || !canRenderRichDom()) {
+      el.textContent = text;
+      return;
+    }
+    el.textContent = '';
+    var lines = text.split('\n');
+    var tokenRe = /(\[[^\]\n]{1,42}\]|\([^\)\n]{1,42}\)|\*[^*\n]{1,42}\*)/g;
+    for (var i = 0; i < lines.length; i++) {
+      if (i > 0) el.appendChild(document.createTextNode('\n'));
+      var line = lines[i];
+      if (/^\s*[♪♫]/.test(line) || /[♪♫]\s*$/.test(line)) {
+        var music = document.createElement('span');
+        music.className = 'sub-music';
+        music.textContent = line;
+        el.appendChild(music);
+        continue;
+      }
+      var lastIndex = 0;
+      var italicRest = false;
+      var match;
+      tokenRe.lastIndex = 0;
+      while ((match = tokenRe.exec(line)) !== null) {
+        if (match.index > lastIndex) {
+          var chunk = line.slice(lastIndex, match.index);
+          if (italicRest) {
+            var em = document.createElement('span');
+            em.className = 'sub-italic';
+            em.textContent = chunk;
+            el.appendChild(em);
+          } else {
+            el.appendChild(document.createTextNode(chunk));
+          }
+        }
+        var tok = match[0];
+        var sfx = document.createElement('span');
+        sfx.className = 'sub-sfx';
+        sfx.textContent = tok;
+        el.appendChild(sfx);
+        if (VOICE_TAG_RE.test(tok)) italicRest = true;
+        lastIndex = match.index + tok.length;
+      }
+      if (lastIndex < line.length) {
+        var tail = line.slice(lastIndex);
+        if (italicRest) {
+          var emTail = document.createElement('span');
+          emTail.className = 'sub-italic';
+          emTail.textContent = tail;
+          el.appendChild(emTail);
+        } else {
+          el.appendChild(document.createTextNode(tail));
+        }
+      }
+    }
+  }
+
   // Satırı yazar. Sayfadaki metin bölünmüş hâlidir; karşılaştırmalar için özgün metin elementte kalır.
   function setLineText(textId, text, paragraphs, baseSize) {
     var el = $(textId);
-    var wrapped = paragraphs ? { text: text, scale: 1 } : wrapSubtitle(text, el, baseSize, coverSize(textId));
+    var polished = paragraphs ? text : polishTypography(text);
+    var wrapped = paragraphs ? { text: polished, scale: 1 } : wrapSubtitle(polished, el, baseSize, coverSize(textId));
     el.rawText = text;
-    el.textContent = wrapped.text;
+    renderRichSubtitle(el, wrapped.text);
     el.style.whiteSpace = 'pre-line';
     var size = Math.round(baseSize * wrapped.scale);
     el.style.fontSize = size + 'px';
@@ -596,6 +686,15 @@
   }
 
   var motionFrames = {};
+  var exitFadeTimer = null;
+  var EXIT_FADE_MS = 220;
+
+  function cancelExitFade() {
+    if (!exitFadeTimer) return;
+    clearTimeout(exitFadeTimer);
+    exitFadeTimer = null;
+    if ($('subtitle-cover').style) $('subtitle-cover').style.opacity = '';
+  }
 
   function cancelMotion(id) {
     if (!motionFrames[id]) return;
@@ -654,6 +753,7 @@
   // paragraphs: görev paneli gibi başlık ve maddeli yazılar satır satır, sola yaslı gösterilir.
   // replaces: bilgisayar bu satırı öncekinin uzamış ya da düzelmiş okuması saydı (bkz. replacesCurrent).
   function showSubtitle(text, duration, box, paragraphs, replaces) {
+    cancelExitFade();
     var now = Date.now();
     var wasVisible = $('subtitle').className !== 'hidden';
     var current = rawText('subtitle-text');
@@ -672,6 +772,7 @@
     // Ölçümleri ve placeCover'ı temiz yapmak için önceki animasyon dönüşümlerini sıfırla.
     cancelMotion('subtitle-text');
     resetMotion($('subtitle-text'));
+    if ($('subtitle-cover').style) $('subtitle-cover').style.opacity = '';
     if (willStack) {
       cancelMotion('subtitle-prev-text');
       resetMotion($('subtitle-prev-text'));
@@ -695,7 +796,7 @@
     holdUntil = shownAt + Math.min(HOLD_MAX_MS, 2000 + text.length * 60);
     currentBox = validBox(box);
     setLineText('subtitle-text', text, paragraphs, fontBase);
-    $('subtitle-text').style.textAlign = paragraphs ? 'left' : '';
+    $('subtitle-text').style.textAlign = (paragraphs || isTwoSpeakerDialogue(text)) ? 'left' : '';
     $('subtitle').className = '';
     layout();
     setStatus('st-last', text.length > 40 ? text.slice(0, 40) + '…' : text);
@@ -737,18 +838,50 @@
     renderDiag();
   }
 
-  // reason: yazıyı neyin kaldırdığı; panelde görünen süreyle birlikte sebebi gösterir.
-  function hideSubtitle(reason) {
-    clearTimeout(hideTimer);
-    if ($('subtitle').className !== 'hidden') {
-      diag.lastHide = (reason || '?') + ' ' + (Date.now() - shownAt) + 'ms';
-      renderDiag();
-    }
+  function finalizeHideSubtitle() {
+    exitFadeTimer = null;
     cancelMotion('subtitle-text');
     resetMotion($('subtitle-text'));
+    if ($('subtitle-cover').style) $('subtitle-cover').style.opacity = '';
     $('subtitle').className = 'hidden';
     $('subtitle-cover').className = 'hidden';
     hidePrevious();
+  }
+
+  // reason: yazıyı neyin kaldırdığı; panelde görünen süreyle birlikte sebebi gösterir.
+  // Doğal konuşma bitiminde ('timer', 'clear', 'clear-held') 220 ms yumuşakça sönerek kapanır;
+  // arka plan / ekran çevirisi gibi durumlarda gecikmesiz gizlenir.
+  function hideSubtitle(reason) {
+    clearTimeout(hideTimer);
+    cancelExitFade();
+    var visible = $('subtitle').className !== 'hidden';
+    if (visible) {
+      diag.lastHide = (reason || '?') + ' ' + (Date.now() - shownAt) + 'ms';
+      renderDiag();
+    }
+    var graceful = visible && (reason === 'timer' || reason === 'clear' || reason === 'clear-held') &&
+      typeof window.requestAnimationFrame === 'function';
+    if (!graceful) {
+      finalizeHideSubtitle();
+      return;
+    }
+    cancelMotion('subtitle-text');
+    var el = $('subtitle-text');
+    var ease = 'cubic-bezier(0.4, 0, 0.2, 1)';
+    var tr = '-webkit-transform ' + EXIT_FADE_MS + 'ms ' + ease +
+      ', transform ' + EXIT_FADE_MS + 'ms ' + ease +
+      ', opacity ' + EXIT_FADE_MS + 'ms ' + ease;
+    el.style.webkitTransition = tr;
+    el.style.transition = tr;
+    el.style.webkitTransform = 'translate3d(0,-6px,0) scale(0.99)';
+    el.style.transform = 'translate3d(0,-6px,0) scale(0.99)';
+    el.style.opacity = '0';
+    if ($('subtitle-cover').className !== 'hidden') {
+      $('subtitle-cover').style.opacity = '0';
+    }
+    if ($('subtitle-prev').className === '') $('subtitle-prev').className = 'fading';
+    if ($('subtitle-prev2').className === '') $('subtitle-prev2').className = 'fading';
+    exitFadeTimer = setTimeout(finalizeHideSubtitle, EXIT_FADE_MS);
   }
 
   // Bilgisayardan gelen "temizle": yazı okunacak kadar görünmediyse kalan süre dolunca kaldırılır.
@@ -1290,8 +1423,8 @@
     body.className = (on ? rest + name : rest).replace(/^\s+|\s+$/g, '').replace(/\s+/g, ' ');
   }
 
-  // Bilgisayardaki "Yazı rengi" seçimi; bilinmeyen değer gelirse renk değişmez.
-  var TEXT_COLORS = { white: '#FFFFFF', yellow: '#FFE135' };
+  // Bilgisayardaki "Yazı rengi" seçimi (OLED'de halasyon yapmayan sinema kırık beyazı ve sıcak sinema sarısı).
+  var TEXT_COLORS = { white: '#F5F6F8', yellow: '#FCE26B' };
 
   function applyStyle(style) {
     if (style.fontSize) {

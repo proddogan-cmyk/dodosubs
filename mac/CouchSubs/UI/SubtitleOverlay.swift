@@ -282,26 +282,30 @@ struct SubtitleOverlayView: View {
         }
         // Derleyici uzun zincirde tür çıkarımında takılmasın diye değerler önce hesaplanır (CI'daki Xcode).
         let weight: Font.Weight = style.bold ? .bold : .semibold
-        let alignment: TextAlignment = line.paragraphs ? .leading : .center
-        let shadowRadius: CGFloat = 2 * scale
+        let twoSpeaker = !line.paragraphs && Self.isTwoSpeakerDialogue(wrapped.text)
+        let alignment: TextAlignment = (line.paragraphs || twoSpeaker) ? .leading : .center
+        let thinBg = alpha < 0.5
         let vertical: CGFloat = (current ? 10 : 6) * scale
         let horizontal: CGFloat = (current ? 26 : 20) * scale
         // Bant: kutu pencerenin tüm genişliğini kaplar, oyundaki İngilizce yazıyı yan yana da gizler.
         let band = style.backgroundShape == .band
-        let corner: CGFloat = band ? 0 : 10 * scale
+        let corner: CGFloat = band ? 0 : 12 * scale
         let shown: Double = line.fading ? 0 : opacity
-        let text = Text(verbatim: wrapped.text)
-            .font(.system(size: size, weight: weight))
-            .foregroundStyle(Self.color(style.textColor))
+        let displayText = line.paragraphs ? wrapped.text : Self.polishTypography(wrapped.text)
+        let attributed = Self.richSubtitle(displayText, size: size, weight: weight, baseColor: Self.color(style.textColor))
+        let text = Text(attributed)
+            .tracking(size * 0.014)
         return text
             .multilineTextAlignment(alignment)
-            .lineSpacing(size * 0.3)
-            .shadow(color: .black, radius: shadowRadius, x: 0, y: shadowRadius)
+            .lineSpacing(size * 0.32)
+            .shadow(color: .black.opacity(thinBg ? 0.96 : 0.9), radius: (thinBg ? 1.5 : 2) * scale, x: 0, y: 1.5 * scale)
+            .shadow(color: .black.opacity(thinBg ? 0.85 : 0.45), radius: (thinBg ? 9 : 6) * scale, x: 0, y: (thinBg ? 3 : 2) * scale)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.vertical, vertical)
             .padding(.horizontal, horizontal)
             .frame(maxWidth: band ? .infinity : nil)
-            .background(Color.black.opacity(alpha), in: RoundedRectangle(cornerRadius: corner))
+            .background(Color(red: 12 / 255, green: 14 / 255, blue: 18 / 255).opacity(alpha), in: RoundedRectangle(cornerRadius: corner))
+            .shadow(color: (!thinBg && !band) ? .black.opacity(0.38) : .clear, radius: 14 * scale, x: 0, y: 5 * scale)
             .opacity(shown)
             .offset(y: line.fading ? -14 * scale : 0)
             .scaleEffect(line.fading ? 0.96 : 1, anchor: .bottom)
@@ -364,11 +368,98 @@ struct SubtitleOverlayView: View {
         .gesture(moveGesture)
     }
 
-    /// TV uygulamasındaki renklerle aynı (beyaz, #FFE135).
+    /// TV uygulamasındaki OLED-dostu sinema renkleri (kırık beyaz #F5F6F8, sıcak sinema sarısı #FCE26B).
     static func color(_ color: SubtitleTextColor) -> Color {
         switch color {
-        case .white: .white
-        case .yellow: Color(red: 1, green: 0xE1 / 255, blue: 0x35 / 255)
+        case .white: Color(red: 0xF5 / 255, green: 0xF6 / 255, blue: 0xF8 / 255)
+        case .yellow: Color(red: 0xFC / 255, green: 0xE2 / 255, blue: 0x6B / 255)
         }
+    }
+
+    private static let sfxTokenRegex = try! NSRegularExpression(pattern: #"(\[[^\]\n]{1,42}\]|\([^\)\n]{1,42}\)|\*[^*\n]{1,42}\*)"#)
+    private static let voiceTagRegex = try! NSRegularExpression(pattern: #"(radyo|telsiz|radio|intercom|hoparlör|telefon|phone|fısıld|whisper|mırıldan|dış ses|anons|\bpa\b|\btv\b|kayıt)"#, options: [.caseInsensitive])
+
+    private static func isTwoSpeakerDialogue(_ text: String) -> Bool {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count >= 2 else { return false }
+        let dashed = lines.filter { line in
+            let t = line.drop(while: { $0 == " " || $0 == "\t" })
+            guard let first = t.first, first == "-" || first == "–" || first == "—" else { return false }
+            let rest = t.dropFirst()
+            return rest.first == " " && rest.dropFirst().contains(where: { !$0.isWhitespace })
+        }
+        return dashed.count >= 2
+    }
+
+    private static func polishTypography(_ text: String) -> String {
+        guard isTwoSpeakerDialogue(text) else { return text }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            let s = String(line)
+            if let range = s.range(of: #"^\s*-\s+"#, options: .regularExpression) {
+                return "– " + s[range.upperBound...]
+            }
+            return s
+        }.joined(separator: "\n")
+    }
+
+    /// `[Radyo]`, `(Fısıldayarak)`, `*Siren*` ve `♪ şarkı sözleri ♪` kalıplarını sinema biçiminde (italik/gümüş/altın) renklendirir.
+    private static func richSubtitle(_ text: String, size: CGFloat, weight: Font.Weight, baseColor: Color) -> AttributedString {
+        let baseFont = Font.system(size: size, weight: weight)
+        let italicFont = Font.system(size: size, weight: weight).italic()
+        let sfxFont = Font.system(size: size * 0.92, weight: weight).italic()
+        let sfxColor = Color(red: 226 / 255, green: 232 / 255, blue: 240 / 255).opacity(0.86)
+        let musicColor = Color(red: 0xFD / 255, green: 0xE6 / 255, blue: 0x8A / 255)
+
+        var output = AttributedString()
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        for (idx, rawLine) in lines.enumerated() {
+            if idx > 0 { output.append(AttributedString("\n")) }
+            let line = String(rawLine)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("♪") || trimmed.hasPrefix("♫") || trimmed.hasSuffix("♪") || trimmed.hasSuffix("♫") {
+                var part = AttributedString(line)
+                part.font = italicFont
+                part.foregroundColor = musicColor
+                output.append(part)
+                continue
+            }
+            let ns = line as NSString
+            let matches = sfxTokenRegex.matches(in: line, range: NSRange(location: 0, length: ns.length))
+            if matches.isEmpty {
+                var part = AttributedString(line)
+                part.font = baseFont
+                part.foregroundColor = baseColor
+                output.append(part)
+                continue
+            }
+            var cursor = 0
+            var italicRest = false
+            for match in matches {
+                if match.range.location > cursor {
+                    let chunk = ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+                    var part = AttributedString(chunk)
+                    part.font = italicRest ? italicFont : baseFont
+                    part.foregroundColor = baseColor
+                    output.append(part)
+                }
+                let token = ns.substring(with: match.range)
+                var sfxPart = AttributedString(token)
+                sfxPart.font = sfxFont
+                sfxPart.foregroundColor = sfxColor
+                output.append(sfxPart)
+                if voiceTagRegex.firstMatch(in: token, range: NSRange(location: 0, length: (token as NSString).length)) != nil {
+                    italicRest = true
+                }
+                cursor = match.range.location + match.range.length
+            }
+            if cursor < ns.length {
+                let tail = ns.substring(from: cursor)
+                var part = AttributedString(tail)
+                part.font = italicRest ? italicFont : baseFont
+                part.foregroundColor = baseColor
+                output.append(part)
+            }
+        }
+        return output
     }
 }

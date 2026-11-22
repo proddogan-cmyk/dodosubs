@@ -37,8 +37,8 @@ public struct OnlineKeyCheck: Equatable {
 public final class DeepLTranslator: TextTranslator, OnlineTranslating {
     /// Kalıcı önbellek dosyasındaki motor adı.
     public static let engineID = "deepl"
-    /// Bağlama giden önceki satır sayısı.
-    public static let contextLines = 3
+    /// Bağlama giden önceki satır sayısı (DeepL `context` alanı ücretlendirilmez; daha geniş sahne hafızası sen/siz tutarlılığını güçlendirir).
+    public static let contextLines = 5
     /// Hata sonrası bu süre DeepL denenmez; her satırda bağlantı zaman aşımını beklemeyelim. 1 dk oyunda çok uzundu
     /// (Windows ve Android ile aynı).
     static let retryAfter: TimeInterval = 15

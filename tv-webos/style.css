@@ -6,10 +6,12 @@ html, body {
   overflow: hidden;
   /* webOS HDMI görüntüyü sayfanın altındaki ayrı bir katmanda çizer; sayfa şeffaf kalmalı. */
   background: transparent;
-  color: #fff;
+  color: #F5F6F8;
   /* Her TV'nin kendi yazı tipi: LG, Samsung (Tizen), Android TV; sonra genel yedek. "Segoe UI" bilerek yok: harfleri
      ekran çevirisi kutularının satır yüksekliğini aşıyor, Windows'ta tv-screen.test.js'in 4K ölçümünü bozuyordu. */
   font-family: "LG Smart UI", "Museo Sans", "SamsungOne", "Tizen Sans", Roboto, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 #video-host, #video-host video {
@@ -34,12 +36,17 @@ html, body {
 
 #subtitle.hidden { visibility: hidden; }
 
-/* "Üstünü örtsün" yerleşiminde oyundaki İngilizce altyazıyı kapatan zemin. */
+/* "Üstünü örtsün" yerleşiminde oyundaki İngilizce altyazıyı kapatan zemin: kenarları sert dikdörtgen yerine
+   sahneye yumuşakça eriyen (feathered) sinematik maske ve kapanışta yumuşak sönme. */
 #subtitle-cover {
   position: absolute;
   z-index: 9;
   border-radius: 1.4vh;
-  background: rgba(12, 14, 18, 0.97);
+  background: rgba(12, 14, 18, 0.96);
+  box-shadow: 0 0 26px 12px rgba(10, 12, 16, 0.78);
+  -webkit-transition: opacity 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition: opacity 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: opacity;
 }
 #subtitle-cover.hidden { display: none; }
 
@@ -328,18 +335,19 @@ html, body {
 
 #subtitle-prev-text, #subtitle-prev2-text {
   display: inline-block;
-  padding: 0.24em 0.5em;
-  border-radius: 0.33em;
+  padding: 0.24em 0.52em;
+  border-radius: 0.36em;
   background: rgba(12, 14, 18, 0.75);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.30);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.32), 0 0 12px 2px rgba(10, 12, 16, 0.20);
   max-width: 100%;
   box-sizing: border-box;
   word-wrap: break-word;
   overflow-wrap: anywhere;
   font-size: 37px;
-  line-height: 1.25;
+  line-height: 1.30;
+  letter-spacing: 0.014em;
   font-weight: 400;
-  text-shadow: 0 2px 4px #000;
+  text-shadow: 0 2px 5px rgba(0, 0, 0, 0.92), 0 0 10px rgba(0, 0, 0, 0.45);
   -webkit-transform-origin: center bottom;
   transform-origin: center bottom;
   will-change: transform, opacity;
@@ -348,37 +356,63 @@ html, body {
 
 /* Zemin mavimsi siyah ve neredeyse opaktır; oyunun parlak sahneleri kutudan sızmaz. İç boşluk ve köşe em cinsindendir:
    yazı boyu (ve uzun cümlede otomatik küçülme) değişse de kutu/yazı oranı aynı kalır. Zemin saydamlaşınca yazıya
-   sert kontur eklenir (body.thin-bg). Boşluksuz çok uzun bir sözcük (ad, adres) ekrandan taşmasın diye gerekirse
-   ortasından kırılır; overflow-wrap: anywhere'i tanımayan eski TV tarayıcılarında word-wrap aynı işi görür. */
+   sinematik çok katmanlı kontur + derin gölge eklenir (body.thin-bg). */
 #subtitle-text {
   display: inline-block;
-  padding: 0.24em 0.5em;
-  border-radius: 0.33em;
+  padding: 0.25em 0.54em;
+  border-radius: 0.36em;
   background: rgba(12, 14, 18, 0.9);
-  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.44),
+    0 0 18px 3px rgba(10, 12, 16, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
   max-width: 100%;
   box-sizing: border-box;
   word-wrap: break-word;
   overflow-wrap: anywhere;
   font-size: 46px;
-  line-height: 1.25;
+  line-height: 1.30;
+  letter-spacing: 0.014em;
   font-weight: 400;
-  text-shadow: 0 2px 4px #000;
+  text-shadow: 0 2px 5px rgba(0, 0, 0, 0.92), 0 0 12px rgba(0, 0, 0, 0.48);
   -webkit-transform-origin: center bottom;
   transform-origin: center bottom;
   will-change: transform, opacity;
 }
 
-/* Zemin %50'den saydamsa (app.js applyStyle) yazının çevresine 1 px'lik sert siyah kontur eklenir: tek yumuşak gölge
-   açık sahnede (kar, gökyüzü) beyaz yazıyı seçtirmiyor. */
+/* Zengin sinema biçimlendirmesi: [Radyo], (Fısıldayarak), *Siren*, telsiz/iç ses ve ♪ şarkı sözleri ♪ */
+.sub-sfx {
+  font-style: italic;
+  color: rgba(226, 232, 240, 0.86);
+  font-size: 0.92em;
+  letter-spacing: 0.02em;
+}
+.sub-italic {
+  font-style: italic;
+}
+.sub-music {
+  font-style: italic;
+  color: #FDE68A;
+}
+
+/* Zemin %50'den saydamsa (kutusuz PS5 / Rockstar sinema modu): çok katmanlı sert kontur + geniş yumuşak halo gölge,
+   parlak güneş veya kar sahnelerinde bile kutusuz olarak jilet gibi okunur. */
 body.thin-bg #subtitle-text, body.thin-bg #subtitle-prev-text, body.thin-bg #subtitle-prev2-text {
-  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 4px #000, 0 2px 4px #000;
+  text-shadow:
+    -1.5px -1.5px 0 rgba(0, 0, 0, 0.95),
+     1.5px -1.5px 0 rgba(0, 0, 0, 0.95),
+    -1.5px  1.5px 0 rgba(0, 0, 0, 0.95),
+     1.5px  1.5px 0 rgba(0, 0, 0, 0.95),
+     0      2px   4px rgba(0, 0, 0, 0.96),
+     0      4px  14px rgba(0, 0, 0, 0.85),
+     0      0    24px rgba(0, 0, 0, 0.65);
+  box-shadow: none;
+}
+body.thin-bg #subtitle-cover {
   box-shadow: none;
 }
 
-
-/* Tam genişlik bant (bilgisayardaki "Arka plan alanı"): zemin ekranın iki kenarına uzanır, oyundaki İngilizce yazı
-   yan yana taşsa da görünmez. Eski sürümler bu sınıfı hiç kurmaz. */
+/* Tam genişlik bant (bilgisayardaki "Arka plan alanı"): zemin ekranın iki kenarına uzanır, üst/alt kenarı sahneye erir. */
 body.band #subtitle { left: 0 !important; right: 0 !important; }
 body.band #subtitle-text, body.band #subtitle-prev-text, body.band #subtitle-prev2-text {
   display: block;
@@ -386,8 +420,11 @@ body.band #subtitle-text, body.band #subtitle-prev-text, body.band #subtitle-pre
   border-radius: 0;
   box-shadow: none;
 }
-/* Bantta örtü de ekranın iki kenarına uzanır; köşeleri yuvarlak kalınca ekran kenarında köşelerden oyun görünüyordu. */
-body.band #subtitle-cover { border-radius: 0; }
+/* Bantta örtü de ekranın iki kenarına uzanır; üst-alt kenar yumuşak geçişli gölgeyle sahneye karışır. */
+body.band #subtitle-cover {
+  border-radius: 0;
+  box-shadow: 0 -10px 22px rgba(10, 12, 16, 0.72), 0 10px 22px rgba(10, 12, 16, 0.72);
+}
 
 /* Panel ve bekleme ekranı: design/tokens.json'un koyu tema renkleri (docs/TASARIM.md). Köşeler belirteç ölçeğinin
    TV'deki iki katıdır: büyük kutular 32 (card), küçük notlar ve düğmeler 24 (control). En küçük arayüz yazısı 24 px.
