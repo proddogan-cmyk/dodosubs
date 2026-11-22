@@ -255,10 +255,14 @@ final class LiveServices: AppServices {
         case .lg:
             break
         }
+        let token = SamsungTokenHolder(token: key, onChange: onKey)
         let locator = TVLocator(tv: tv, connect: { tv in
-            let client = SSAPClient(tv: tv, clientKey: key)
+            let client = SSAPClient(tv: tv, clientKey: token.current, onClientKey: { newKey in
+                token.received(newKey)
+            })
             do {
-                _ = try await client.connect()
+                let received = try await client.connect()
+                token.received(received)
             } catch {
                 client.close()
                 throw error

@@ -10,9 +10,16 @@ final class FakeLGTV: @unchecked Sendable {
     private let queue = DispatchQueue(label: "fake-lgtv")
     private(set) var receivedURIs: [String] = []
     private(set) var receivedPayloads: [[String: Any]] = []
+    private(set) var registerPayloads: [[String: Any]] = []
     var foregroundApps: [String] = []
     /// true ise register'a yalnız "soru gösterildi" yanıtı verir, onay hiç gelmez.
     var neverApprove = false
+    /// `getPointerInputSocket` çağrısında dönecek soket yolu.
+    var pointerSocketPath: String?
+    /// true ise ilk `getPointerInputSocket` isteğini 401 yetki hatasıyla reddeder, sonraki kayıtta `upgradedKey` verir.
+    var requirePermissionUpgrade = false
+    var issuedKeys: [String] = []
+    private var upgraded = false
 
     init() throws {
         let parameters = NWParameters.tcp
@@ -54,13 +61,27 @@ final class FakeLGTV: @unchecked Sendable {
     private func handle(_ message: [String: Any], on connection: NWConnection) {
         let id = message["id"] as? String ?? ""
         if message["type"] as? String == "register" {
+            let regPayload = message["payload"] as? [String: Any] ?? [:]
+            registerPayloads.append(regPayload)
+            if regPayload["forcePairing"] as? Bool == true { upgraded = true }
+            let key = issuedKeys.isEmpty ? (upgraded ? "upgraded-key" : "fake-key") : issuedKeys.removeFirst()
             send(["type": "response", "id": id, "payload": ["pairingType": "PROMPT", "returnValue": true]], on: connection)
-            if !neverApprove { send(["type": "registered", "id": id, "payload": ["client-key": "fake-key"]], on: connection) }
+            if !neverApprove { send(["type": "registered", "id": id, "payload": ["client-key": key]], on: connection) }
             return
         }
         let uri = message["uri"] as? String ?? ""
         receivedURIs.append(uri)
         receivedPayloads.append(message["payload"] as? [String: Any] ?? [:])
+        if uri.hasSuffix("getPointerInputSocket") {
+            if requirePermissionUpgrade && !upgraded {
+                send(["type": "error", "id": id, "error": "401 insufficient permissions", "payload": [:]], on: connection)
+                return
+            }
+            var payload: [String: Any] = ["returnValue": true]
+            if let pointerSocketPath { payload["socketPath"] = pointerSocketPath }
+            send(["type": "response", "id": id, "payload": payload], on: connection)
+            return
+        }
         var payload: [String: Any] = ["returnValue": true]
         if uri.hasSuffix("getForegroundAppInfo") {
             payload["appId"] = foregroundApps.isEmpty ? "" : foregroundApps.removeFirst()
@@ -154,6 +175,109 @@ final class SSAPClientTests: XCTestCase {
         XCTAssertEqual(key, "fake-key")
         client.close()
     }
+
+    func testKeepScreenAwakeOpensPointerSocketAndReusesIt() async throws {
+        let pointer = try FakePointerSocket()
+        let pointerPort = await pointer.start()
+        defer { pointer.stop() }
+
+        let tv = try FakeLGTV()
+        tv.pointerSocketPath = "ws://127.0.0.1:\(pointerPort)/netinput.pointer.sock"
+        let port = await tv.start()
+        defer { tv.stop() }
+
+        let client = SSAPClient(endpoints: [URL(string: "ws://127.0.0.1:\(port)")!], clientKey: "fake-key")
+        _ = try await client.connect()
+
+        await client.keepScreenAwake()
+        await client.keepScreenAwake()
+        let commands = await pointer.waitForMessages(count: 2)
+
+        XCTAssertEqual(commands, [SSAPClient.keepAwakeCommand, SSAPClient.keepAwakeCommand])
+        let pointerRequests = tv.receivedURIs.filter { $0.hasSuffix("getPointerInputSocket") }
+        XCTAssertEqual(pointerRequests.count, 1, "açık pointer soketi yeniden kullanılmalı")
+        client.close()
+    }
+
+    func testKeepScreenAwakeUpgradesLegacyKeyOn401AndPersistsNewKey() async throws {
+        let pointer = try FakePointerSocket()
+        let pointerPort = await pointer.start()
+        defer { pointer.stop() }
+
+        let tv = try FakeLGTV()
+        tv.pointerSocketPath = "ws://127.0.0.1:\(pointerPort)/netinput.pointer.sock"
+        tv.requirePermissionUpgrade = true
+        let port = await tv.start()
+        defer { tv.stop() }
+
+        let savedKeys = KeyBox()
+        let client = SSAPClient(endpoints: [URL(string: "ws://127.0.0.1:\(port)")!], clientKey: "legacy-key",
+                                onClientKey: { savedKeys.append($0) })
+        _ = try await client.connect()
+        await client.keepScreenAwake()
+        let commands = await pointer.waitForMessages(count: 1)
+
+        XCTAssertEqual(commands, [SSAPClient.keepAwakeCommand])
+        XCTAssertEqual(savedKeys.values.last, "upgraded-key")
+        XCTAssertEqual(tv.registerPayloads.last?["forcePairing"] as? Bool, true)
+        client.close()
+    }
+}
+
+/// LG'nin pointer giriş WebSocket'ini taklit eder ve gelen metin komutlarını kaydeder.
+private final class FakePointerSocket: @unchecked Sendable {
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "fake-pointer")
+    private let lock = NSLock()
+    private var messages: [String] = []
+
+    init() throws {
+        let parameters = NWParameters.tcp
+        parameters.defaultProtocolStack.applicationProtocols.insert(NWProtocolWebSocket.Options(), at: 0)
+        listener = try NWListener(using: parameters, on: .any)
+    }
+
+    func start() async -> UInt16 {
+        await withCheckedContinuation { continuation in
+            listener.newConnectionHandler = { [weak self] connection in
+                guard let self else { return }
+                connection.start(queue: self.queue)
+                self.receive(on: connection)
+            }
+            listener.stateUpdateHandler = { [listener] state in
+                if case .ready = state { continuation.resume(returning: listener.port!.rawValue) }
+            }
+            listener.start(queue: queue)
+        }
+    }
+
+    func stop() { listener.cancel() }
+
+    func waitForMessages(count: Int) async -> [String] {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while ContinuousClock.now < deadline {
+            let current = lock.withLock { messages }
+            if current.count >= count { return current }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        return lock.withLock { messages }
+    }
+
+    private func receive(on connection: NWConnection) {
+        connection.receiveMessage { [weak self] data, _, _, error in
+            guard let self, error == nil, let data else { return }
+            let text = String(decoding: data, as: UTF8.self)
+            self.lock.withLock { self.messages.append(text) }
+            self.receive(on: connection)
+        }
+    }
+}
+
+private final class KeyBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    func append(_ key: String) { lock.withLock { stored.append(key) } }
+    var values: [String] { lock.withLock { stored } }
 }
 
 final class TVKeeperTests: XCTestCase {
@@ -162,8 +286,10 @@ final class TVKeeperTests: XCTestCase {
         var launches: [(String, [String: String])] = []
         var failNext = false
         var closes = 0
+        var keepAwakes = 0
         init(foreground: [String]) { self.foreground = foreground }
         func close() { closes += 1 }
+        func keepScreenAwake() async { keepAwakes += 1 }
         func foregroundAppId() async throws -> String {
             if failNext { failNext = false; throw URLError(.networkConnectionLost) }
             return foreground.isEmpty ? "com.couchsubs.tv" : foreground.removeFirst()
@@ -225,6 +351,37 @@ final class TVKeeperTests: XCTestCase {
         connected.value = false
         await keeper.tick()                     // uygulama kapandı → bir kez daha aç
         XCTAssertEqual(control.launches.count, 2)
+    }
+
+    func testKeepsScreenAwakePeriodicallyAndRescuesFromScreensaver() async throws {
+        let control = FakeControl(foreground: [
+            "com.couchsubs.tv",
+            "com.couchsubs.tv",
+            "netflix",
+            "com.webos.app.screensaver",
+            "com.webos.app.alwaysready",
+        ])
+        let keeper = TVKeeper(connect: { control }, appId: "com.couchsubs.tv", params: ["server": "http://1.2.3.4:8787"],
+                              keepAwakeInterval: .milliseconds(150))
+        await keeper.tick()                     // bağlan ve başlat (launch #1)
+        await keeper.tick()                     // önde bizimki → ilk canlılık sinyali (awake #1)
+        XCTAssertEqual(control.keepAwakes, 1)
+
+        await keeper.tick()                     // aralık dolmadı → hemen tekrar göndermez
+        XCTAssertEqual(control.keepAwakes, 1)
+
+        try await Task.sleep(for: .milliseconds(180))
+        await keeper.tick()                     // Netflix önde → ne sinyal ne yeniden açma
+        XCTAssertEqual(control.keepAwakes, 1)
+        XCTAssertEqual(control.launches.count, 1)
+
+        await keeper.tick()                     // ekran koruyucu → uyandır (awake #2) ve geri getir (launch #2)
+        XCTAssertEqual(control.keepAwakes, 2)
+        XCTAssertEqual(control.launches.count, 2)
+
+        await keeper.tick()                     // Always Ready → uyandır (awake #3) ve geri getir (launch #3)
+        XCTAssertEqual(control.keepAwakes, 3)
+        XCTAssertEqual(control.launches.count, 3)
     }
 }
 

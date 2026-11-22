@@ -18,6 +18,13 @@ final class SSAPMessagesTests: XCTestCase {
         let permissions = try XCTUnwrap(manifest["permissions"] as? [String])
         XCTAssertTrue(permissions.contains("LAUNCH"))
         XCTAssertTrue(permissions.contains("READ_RUNNING_APPS"))
+        XCTAssertTrue(permissions.contains("CONTROL_MOUSE_AND_KEYBOARD"))
+    }
+
+    func testRegisterSupportsForcePairingForPermissionUpgrade() throws {
+        let payload = try XCTUnwrap(try json(SSAPMessages.register(clientKey: nil, forcePairing: true))["payload"] as? [String: Any])
+        XCTAssertEqual(payload["forcePairing"] as? Bool, true)
+        XCTAssertNil(payload["client-key"])
     }
 
     func testRegisterCarriesStoredClientKey() throws {

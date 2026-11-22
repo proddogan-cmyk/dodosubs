@@ -780,3 +780,14 @@ test('ikiz telefon: başlık, gelen/giden baloncuk, saat ve kaydırmada kasa/bal
   assert.ok(pm.nodesById.m3, 'yeni kaydırılan balon eklenmeli');
   assert.strictEqual(pm.nodesById.m3.className, 'pm-bubble incoming');
 });
+
+test('sarı tuş (405) ekran koruyucu canlılık sinyalini arayüze dokunmadan yutar ve tanıda sayar', () => {
+  const tv = startTv({ saved: 'http://192.168.1.109:8787', alive: new Set(['http://192.168.1.109:8787']), hasLocalAddress: false });
+  tv.clock.advance(9000); // panel kapanır, panel ipucu görünür
+  assert.strictEqual(tv.element('panel').className, 'hidden');
+  assert.strictEqual(tv.element('panel-tip').className, '');
+  tv.key(405);
+  assert.strictEqual(tv.element('panel').className, 'hidden', 'sarı tuş paneli açmamalı');
+  assert.strictEqual(tv.element('panel-tip').className, '', 'sarı tuş panel ipucunu bile kapatmamalı');
+  assert.ok(tv.element('st-diag').textContent.includes('awake 1'), 'tanı satırında canlılık sayısı görünmeli');
+});

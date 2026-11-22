@@ -5,6 +5,14 @@
 
   var NETWORK_STATUS = ['luna://com.webos.service.connectionmanager/getStatus', 'luna://com.palm.connectionmanager/getStatus'];
 
+  // Modern webOS 22–25'te WebOSServiceBridge öncelikli, eski webOS'ta PalmServiceBridge yedek olarak kullanılır.
+  function createBridge() {
+    if (typeof WebOSServiceBridge === 'function') return new WebOSServiceBridge();
+    if (typeof PalmServiceBridge === 'function') return new PalmServiceBridge();
+    var Bridge = window.WebOSServiceBridge || window.PalmServiceBridge;
+    return Bridge ? new Bridge() : null;
+  }
+
   // connectionmanager/getStatus yanıtındaki adres: bağlı kablolu, sonra bağlı kablosuz, sonra herhangi biri; yoksa null.
   function addressFromStatus(msg) {
     var status;
@@ -43,7 +51,8 @@
 
       function registerSaver() {
         try {
-          var register = new PalmServiceBridge();
+          var register = createBridge();
+          if (!register) return;
           register.onservicecallback = function (message) {
             var request;
             try { request = JSON.parse(message); } catch (e) { return; }
@@ -53,7 +62,8 @@
             if (request.timestamp === undefined) return;
             window.__screenSaverCount = (window.__screenSaverCount || 0) + 1;
             window.__screenSaverStatus = 'deferred ' + window.__screenSaverCount;
-            var reply = new PalmServiceBridge();
+            var reply = createBridge();
+            if (!reply) return;
             reply.call('luna://com.webos.service.tvpower/power/responseScreenSaverRequest',
               JSON.stringify({ clientName: CLIENT, ack: false, timestamp: request.timestamp }));
             window.__screenSaverReply = reply;
@@ -66,26 +76,33 @@
       }
 
       // Yeni webOS (23/24/25+) sürümlerinde HDMI üstü katman açıkken kumandaya basılmadığı için TV bazen
-      // 2-3 dakikada ekran koruyucuya geçebiliyor. 45 saniyede bir çok katmanlı canlılık sinyali bunu engeller.
+      // 2-3 dakikada ekran koruyucuya geçebiliyor. Asıl kalıcı koruma Mac tarafındaki SSAP donanım canlılık
+      // sinyalidir; burası uyumlu/eski webOS sürümleri için ek katman olarak kalır.
       function keepScreenAwake() {
         try {
           if (window.PalmSystem) window.PalmSystem.keepAlive = true;
           if (window.webOSSystem) window.webOSSystem.keepAlive = true;
         } catch (e) {}
         try {
-          var wake = new PalmServiceBridge();
-          wake.call('luna://com.webos.service.tvpower/power/turnOffScreenSaver', '{}');
-          window.__screenSaverWake = wake;
+          var wake = createBridge();
+          if (wake) {
+            wake.call('luna://com.webos.service.tvpower/power/turnOffScreenSaver', '{}');
+            window.__screenSaverWake = wake;
+          }
         } catch (e) {}
         try {
-          var reset = new PalmServiceBridge();
-          reset.call('luna://com.webos.service.tvpower/power/resetScreenSaverTimer', '{}');
-          window.__screenSaverReset = reset;
+          var reset = createBridge();
+          if (reset) {
+            reset.call('luna://com.webos.service.tvpower/power/resetScreenSaverTimer', '{}');
+            window.__screenSaverReset = reset;
+          }
         } catch (e) {}
         try {
-          var disp = new PalmServiceBridge();
-          disp.call('luna://com.palm.display/control/setProperty', JSON.stringify({ timeout: 0 }));
-          window.__displayWake = disp;
+          var disp = createBridge();
+          if (disp) {
+            disp.call('luna://com.palm.display/control/setProperty', JSON.stringify({ timeout: 0 }));
+            window.__displayWake = disp;
+          }
         } catch (e) {}
         try {
           var video = document.querySelector('#video-host video');
@@ -99,7 +116,7 @@
     },
 
     launchParams: function () {
-      return window.PalmSystem && window.PalmSystem.launchParams;
+      return (window.webOSSystem && window.webOSSystem.launchParams) || (window.PalmSystem && window.PalmSystem.launchParams);
     },
 
     onRelaunch: function (callback) {
@@ -136,7 +153,8 @@
         callback(port, label);
       }
       try {
-        var bridge = new PalmServiceBridge();
+        var bridge = createBridge();
+        if (!bridge) return finish(null);
         bridge.onservicecallback = function (msg) {
           var devices;
           try { devices = JSON.parse(msg).devices || []; } catch (e) { return finish(null); }
@@ -178,7 +196,8 @@
           ask(services, index + 1);
         }
         try {
-          var bridge = new PalmServiceBridge();
+          var bridge = createBridge();
+          if (!bridge) return next();
           bridge.onservicecallback = function (msg) {
             if (answered) return;
             var ip = addressFromStatus(msg);
@@ -201,7 +220,8 @@
     },
 
     exit: function () {
-      if (window.PalmSystem && window.PalmSystem.platformBack) window.PalmSystem.platformBack();
+      if (window.webOSSystem && window.webOSSystem.platformBack) window.webOSSystem.platformBack();
+      else if (window.PalmSystem && window.PalmSystem.platformBack) window.PalmSystem.platformBack();
     }
   };
 })();

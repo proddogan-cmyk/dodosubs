@@ -4,12 +4,20 @@ import Foundation
 
 /// LG webOS'un ikinci ekran arayüzü (SSAP) mesajları.
 enum SSAPMessages {
-    /// Uygulamanın TV'den istediği izinler: uygulama başlatma ve önplandaki uygulamayı okuma.
-    static let permissions = ["LAUNCH", "LAUNCH_WEBAPP", "APP_TO_APP", "READ_RUNNING_APPS", "READ_INSTALLED_APPS"]
+    /// Uygulamanın TV'den istediği izinler: uygulama başlatma, önplandaki uygulamayı okuma ve ekran koruyucu önlemi
+    /// için kumanda giriş soketi (`getPointerInputSocket`).
+    static let permissions = [
+        "LAUNCH",
+        "LAUNCH_WEBAPP",
+        "APP_TO_APP",
+        "READ_RUNNING_APPS",
+        "READ_INSTALLED_APPS",
+        "CONTROL_MOUSE_AND_KEYBOARD",
+    ]
 
-    static func register(clientKey: String?) -> Data {
+    static func register(clientKey: String?, forcePairing: Bool = false) -> Data {
         var payload: [String: Any] = [
-            "forcePairing": false,
+            "forcePairing": forcePairing,
             "pairingType": "PROMPT",
             "manifest": [
                 "manifestVersion": 1,

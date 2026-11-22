@@ -6,11 +6,11 @@
   'use strict';
 
   // TV uygulamasının sürümü: appinfo.json, tv-tizen/config.xml ve tv-android/app/build.gradle ile aynı tutulur.
-  var APP_VERSION = '0.9.65';
+  var APP_VERSION = '0.9.66';
   var t = window.t;
   var config = window.COUCHSUBS_CONFIG || {};
   var platform = window.COUCHSUBS_PLATFORM;
-  var KEY = { RED: 403, GREEN: 404, BLUE: 406, LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, OK: 13, BACK: platform.backKey };
+  var KEY = { RED: 403, GREEN: 404, YELLOW: 405, BLUE: 406, LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, OK: 13, BACK: platform.backKey };
 
   var server = null;
   var eventSource = null;
@@ -53,7 +53,7 @@
   var dropTimer = null;
 
   // Panelde görünen tanı bilgisi: "yazı TV'ye gelmiyor" bildirimlerinde sebebi buradan okuruz.
-  var diag = { subtitles: 0, clears: 0, drops: 0, backgrounded: 0, lastHide: '-', place: '-', error: '' };
+  var diag = { subtitles: 0, clears: 0, drops: 0, backgrounded: 0, awake: 0, lastHide: '-', place: '-', error: '' };
 
   function $(id) { return document.getElementById(id); }
 
@@ -62,6 +62,7 @@
     if (!el) return;
     el.textContent = 'sub ' + diag.subtitles + ' · clear ' + diag.clears + ' · drop ' + diag.drops +
       ' · bg ' + diag.backgrounded + ' · hide ' + diag.lastHide + ' · ' + diag.place +
+      (diag.awake ? ' · awake ' + diag.awake : '') +
       (window.__screenSaverStatus ? ' · saver ' + window.__screenSaverStatus : '') +
       (diag.error ? ' · err ' + diag.error : '');
   }
@@ -2646,6 +2647,13 @@
 
   document.addEventListener('keydown', function (e) {
     var code = e.keyCode;
+    // Sarı tuş (405): Mac tarafındaki ekran koruyucu önleminin görünmez canlılık sinyali; arayüze dokunmadan yutulur.
+    if (code === KEY.YELLOW) {
+      diag.awake++;
+      renderDiag();
+      e.preventDefault();
+      return;
+    }
     if (panelTipShown()) {
       hidePanelTip();
       // Geri yalnız ipucunu kapatır; Tamam ve diğer tuşlar her zamanki işini de yapar (Tamam paneli açar).
