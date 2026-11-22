@@ -6,7 +6,7 @@
   'use strict';
 
   // TV uygulamasının sürümü: appinfo.json, tv-tizen/config.xml ve tv-android/app/build.gradle ile aynı tutulur.
-  var APP_VERSION = '0.9.30';
+  var APP_VERSION = '0.9.61';
   var t = window.t;
   var config = window.COUCHSUBS_CONFIG || {};
   var platform = window.COUCHSUBS_PLATFORM;
@@ -814,24 +814,48 @@
     var id = data && typeof data.id === 'string' ? data.id : '';
     if (!id) return;
     var box = validBox(data.box);
-    if (!data.text || !box) return hideRegion(id);
+    var isBubble = data.style === 'sideBubble';
+    var isLoading = isBubble && data.loading === true;
+    var anchorBox = validBox(data.anchor) || box;
+    if ((!data.text && !isLoading) || !anchorBox) return hideRegion(id);
     // Alanda ayrı duran yazı grupları (görev başlığı ve ayrı sütundaki hedef) kendi yerleriyle gelir: her biri "ekranı
     // çevir"deki gibi kendi İngilizce yazısının üstüne konur. Bloksuz olayda alanın çevirisi tek kutuda kalır.
     var blocks = Array.isArray(data.blocks) ? data.blocks : null;
-    var kind = blocks && blocks.length ? 'region-blocks' : 'region';
+    var kind = isBubble ? 'region-bubbles' : (blocks && blocks.length ? 'region-blocks' : 'region');
     var el = regionBoxes[id];
-    // Bloklar her olayda baştan dizilir; tek kutudan bloklara (ya da tersine) geçen alanın eski kutusu kalkar.
-    if (el && (el.className !== kind || kind === 'region-blocks')) {
+    var themeName = (data.theme === 'viceNeon' || data.theme === 'stealthDark') ? data.theme : 'appleGlass';
+    var scaleVal = (typeof data.scale === 'number' && data.scale >= 0.8 && data.scale <= 1.4) ? data.scale : 1.0;
+    var layoutMode = (data.layout === 'card' || data.layout === 'chat') ? data.layout : 'chat';
+    var bubbleClass = 'region-bubbles theme-' + themeName;
+    var holdMs = (typeof data.holdMs === 'number' && data.holdMs > 0) ? Math.round(data.holdMs) : 0;
+    var bubbleSignature = (data.text || '') + '|' + (isLoading ? '1' : '0') + '|' + themeName + '|' + scaleVal + '|' + layoutMode;
+    // Aynı yan balon metni el sallanmasıyla tekrar geldiyse yeniden çizip titreştirme;
+    // sadece yeni okuma süresi geri sayımı başladıysa mevcut balona ince çubuk ekle.
+    if (el && kind === 'region-bubbles' && el.className === bubbleClass && el.getAttribute('data-bubble-text') === bubbleSignature) {
+      if (holdMs > 0 && el.getAttribute('data-hold-started') !== '1') {
+        el.setAttribute('data-hold-started', '1');
+        attachHoldBar(el, holdMs);
+      }
+      return;
+    }
+    // Bloklar ve balonlar içerik/tema değişince yeniden dizilir; kip değişince eski kutu kalkar.
+    if (el && (el.className !== (kind === 'region-bubbles' ? bubbleClass : kind) || kind === 'region-blocks' || kind === 'region-bubbles')) {
       hideRegion(id);
       el = null;
     }
     if (!el) {
       el = document.createElement('div');
-      el.className = kind;
+      el.className = kind === 'region-bubbles' ? bubbleClass : kind;
       $('regions').appendChild(el);
       regionBoxes[id] = el;
     }
     $('regions').className = '';
+    if (kind === 'region-bubbles') {
+      el.setAttribute('data-bubble-text', bubbleSignature);
+      el.setAttribute('data-hold-started', holdMs > 0 ? '1' : '0');
+      placeSideBubbles(el, data, anchorBox, blocks, isLoading, scaleVal, layoutMode, holdMs);
+      return;
+    }
     if (kind === 'region-blocks') {
       placeItems(el, blocks);
       return;
@@ -855,6 +879,175 @@
     el.style.maxWidth = Math.round(Math.max(boxWidth, width * 0.3)) + 'px';
     var line = typeof data.line === 'number' && data.line > 0 ? data.line * height : 30;
     el.style.fontSize = Math.max(REGION_MIN_FONT, Math.min(REGION_MAX_FONT, Math.round(line * 0.9))) + 'px';
+  }
+
+  // Okuma süresinde tutulan balonun altına ince geri sayım çubuğu ekler.
+  function attachHoldBar(container, holdMs) {
+    if (!container || !(holdMs > 0)) return;
+    var items = container.querySelectorAll('.bubble-item');
+    if (!items || !items.length) return;
+    var target = items[items.length - 1];
+    if (target.querySelector('.bubble-hold-track')) return;
+    var track = document.createElement('div');
+    track.className = 'bubble-hold-track';
+    var fill = document.createElement('span');
+    fill.className = 'bubble-hold-fill';
+    fill.style.animationDuration = holdMs + 'ms';
+    track.appendChild(fill);
+    target.appendChild(track);
+  }
+
+  // Telefon / yan balon yerleşimi: çeviriler telefon ekranını kapatmaz; telefon sağdaysa hemen solunda, soldaysa hemen
+  // sağında buzlu cam konuşma balonu olarak açılır. Gönderen adı avatarlı vurgulu başlık olur, ana diyalog altyazısıyla
+  // çakışmaz ve yeni çeviri beklenirken zarif buzlu cam nabız göstergesi sunar.
+  function placeSideBubbles(container, data, box, blocks, isLoading, scaleVal, layoutMode, holdMs) {
+    var width = window.innerWidth || 1920;
+    var height = window.innerHeight || 1080;
+    var scale = scaleVal || 1.0;
+    var anchor = validBox(data.anchor) || box;
+    var onRight = (anchor.left + anchor.right) / 2 > 0.5;
+    var gap = 0.016;
+    var maxW = onRight
+      ? Math.min(width * 0.36, Math.max(width * 0.20, (anchor.left - 0.04) * width))
+      : Math.min(width * 0.36, Math.max(width * 0.20, (0.96 - anchor.right) * width));
+
+    // Ana diyalog altyazısı ekrandaysa telefon balonları onun üstünde kalır (sıfır çarpışma).
+    var maxBottom = Math.round(height * 0.94);
+    var subEl = $('subtitle');
+    if (subEl && subEl.className !== 'hidden' && subEl.offsetHeight > 0) {
+      var subTop = subEl.getBoundingClientRect ? subEl.getBoundingClientRect().top : (height * 0.80);
+      if (subTop > height * 0.40) {
+        maxBottom = Math.min(maxBottom, Math.round(subTop - 16));
+      }
+    }
+
+    // Henüz metin yok ama telefon algılandı / çevriliyor: zarif buzlu cam shimmer kartı göster.
+    if (!data.text && isLoading) {
+      var loader = document.createElement('div');
+      loader.className = 'bubble-item bubble-loading ' + (onRight ? 'point-right' : 'point-left');
+      if (onRight) {
+        loader.style.right = (Math.max(0.02, 1 - anchor.left + gap) * 100) + '%';
+      } else {
+        loader.style.left = (Math.min(0.80, anchor.right + gap) * 100) + '%';
+      }
+      var l1 = document.createElement('span');
+      l1.className = 'shimmer-line';
+      var l2 = document.createElement('span');
+      l2.className = 'shimmer-line';
+      loader.appendChild(l1);
+      loader.appendChild(l2);
+      var loadTop = Math.min(maxBottom - 64, Math.max(Math.round(height * 0.06), Math.round((anchor.top + (anchor.bottom - anchor.top) * 0.22) * height)));
+      loader.style.top = loadTop + 'px';
+      container.appendChild(loader);
+      return;
+    }
+
+    var items = [];
+    if (blocks && blocks.length) {
+      for (var i = 0; i < blocks.length; i++) {
+        var b = blocks[i];
+        var bBox = validBox(b && b.box) || box;
+        if (b && b.text) {
+          items.push({
+            text: b.text, icons: b.icons, box: bBox, line: b.line || data.line,
+            sender: b.sender || '', senderColor: b.senderColor || ''
+          });
+        }
+      }
+    }
+    if (!items.length && data.text) {
+      items.push({ text: data.text, icons: data.icons, box: box, line: data.line, sender: '', senderColor: '' });
+    }
+    items.sort(function (a, b) { return a.box.top - b.box.top; });
+
+    // Uygulama-farkında kart kipi (E-posta / sosyal medya / makale): dağınık küçük kutular yerine tek, zarif okuma kartı.
+    if (layoutMode === 'card' && items.length > 1) {
+      var card = document.createElement('div');
+      card.className = 'bubble-item bubble-card ' + (onRight ? 'point-right' : 'point-left');
+      for (var c = 0; c < items.length; c++) {
+        var part = document.createElement('span');
+        part.className = (c === 0 && items[c].text.length <= 48) ? 'bubble-card-title' : 'bubble-card-part';
+        fillText(part, items[c].text, items[c].icons);
+        card.appendChild(part);
+      }
+      if (isLoading) {
+        var cardDots = document.createElement('span');
+        cardDots.className = 'bubble-more-dots';
+        cardDots.textContent = '•••';
+        card.appendChild(cardDots);
+      }
+      if (onRight) {
+        card.style.right = (Math.max(0.02, 1 - anchor.left + gap) * 100) + '%';
+      } else {
+        card.style.left = (Math.min(0.80, anchor.right + gap) * 100) + '%';
+      }
+      card.style.maxWidth = Math.round(maxW) + 'px';
+      var cardLinePx = typeof data.line === 'number' && data.line > 0 ? data.line * height : 28;
+      card.style.fontSize = Math.max(19, Math.min(42, Math.round(cardLinePx * 0.94 * scale))) + 'px';
+      container.appendChild(card);
+      var cardH = card.offsetHeight || 120;
+      var cardTop = Math.round(items[0].box.top * height);
+      var cardMinTop = Math.round(height * 0.04);
+      if (cardTop + cardH > maxBottom) cardTop = Math.max(cardMinTop, maxBottom - cardH);
+      card.style.top = Math.max(cardMinTop, cardTop) + 'px';
+      if (holdMs > 0) attachHoldBar(container, holdMs);
+      return;
+    }
+
+    var nodes = [];
+    for (var j = 0; j < items.length; j++) {
+      var item = items[j];
+      var node = document.createElement('div');
+      node.className = 'bubble-item ' + (onRight ? 'point-right' : 'point-left');
+      if (j > 0) node.style.animationDelay = Math.min(180, j * 45) + 'ms';
+      if (item.sender) {
+        var header = document.createElement('div');
+        header.className = 'bubble-header';
+        var avatar = document.createElement('span');
+        avatar.className = 'bubble-avatar';
+        avatar.textContent = item.sender.charAt(0).toUpperCase();
+        avatar.style.background = item.senderColor || '#7dd3fc';
+        var senderEl = document.createElement('span');
+        senderEl.className = 'bubble-sender';
+        if (item.senderColor) senderEl.style.color = item.senderColor;
+        senderEl.textContent = item.sender;
+        header.appendChild(avatar);
+        header.appendChild(senderEl);
+        node.appendChild(header);
+      }
+      var bodyEl = document.createElement('span');
+      bodyEl.className = 'bubble-body';
+      fillText(bodyEl, item.text, item.icons);
+      node.appendChild(bodyEl);
+      if (isLoading && j === items.length - 1) {
+        var dots = document.createElement('span');
+        dots.className = 'bubble-more-dots';
+        dots.textContent = '•••';
+        node.appendChild(dots);
+      }
+      if (onRight) {
+        node.style.right = (Math.max(0.02, 1 - anchor.left + gap) * 100) + '%';
+      } else {
+        node.style.left = (Math.min(0.80, anchor.right + gap) * 100) + '%';
+      }
+      node.style.maxWidth = Math.round(maxW) + 'px';
+      var linePx = typeof item.line === 'number' && item.line > 0 ? item.line * height : 28;
+      node.style.fontSize = Math.max(19, Math.min(42, Math.round(linePx * 0.94 * scale))) + 'px';
+      container.appendChild(node);
+      nodes.push({ node: node, targetTop: Math.round(item.box.top * height) });
+    }
+
+    var minTop = Math.round(height * 0.04);
+    var nextTop = minTop;
+    for (var k = 0; k < nodes.length; k++) {
+      var entry = nodes[k];
+      var h = entry.node.offsetHeight || 58;
+      var top = Math.max(nextTop, entry.targetTop);
+      if (top + h > maxBottom) top = Math.max(minTop, maxBottom - h);
+      entry.node.style.top = top + 'px';
+      nextTop = top + h + 12;
+    }
+    if (holdMs > 0) attachHoldBar(container, holdMs);
   }
 
   function hideRegion(id) {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import CoreGraphics
+import CoreImage
 import Foundation
 import Vision
 
@@ -10,11 +11,14 @@ public protocol TextReader: Sendable {
     func read(_ image: CGImage, deep: Bool) throws -> String
     /// Satırlar ayrı ayrı ve görüntüdeki yerleriyle.
     func readLines(_ image: CGImage, deep: Bool) throws -> Reading
+    /// `fast` true ise Apple Vision `.fast` (~15-30 ms) ile şimşek hızında ön-okuma yapar (telefon hibrit modu).
+    func readLines(_ image: CGImage, deep: Bool, fast: Bool) throws -> Reading
 }
 
 extension TextReader {
     public func read(_ image: CGImage, deep: Bool) throws -> String { try read(image) }
     public func readLines(_ image: CGImage, deep: Bool) throws -> Reading { Reading(text: try read(image, deep: deep)) }
+    public func readLines(_ image: CGImage, deep: Bool, fast: Bool) throws -> Reading { try readLines(image, deep: deep) }
 }
 
 /// Apple Vision ile cihaz üstünde yazı tanıma. Satırlar yukarıdan aşağı sıralanır.
@@ -34,7 +38,12 @@ public struct VisionReader: TextReader {
     }
 
     public func readLines(_ image: CGImage, deep: Bool) throws -> Reading {
-        deep ? try Self.firstLines(of: image, using: recognize) : try recognize(image)
+        deep ? try Self.firstLines(of: image, using: { try recognize($0, fast: false) }) : try recognize(image, fast: false)
+    }
+
+    public func readLines(_ image: CGImage, deep: Bool, fast: Bool) throws -> Reading {
+        if fast { return try recognize(image, fast: true) }
+        return try readLines(image, deep: deep)
     }
 
     /// Satırsız eski biçim (testler için): bulunan yazı tek metin olarak döner.
@@ -75,9 +84,9 @@ public struct VisionReader: TextReader {
         var all: [Result<Reading, Error>?] { lock.withLock { values } }
     }
 
-    private func recognize(_ image: CGImage) throws -> Reading {
+    private func recognize(_ image: CGImage, fast: Bool = false) throws -> Reading {
         let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
+        request.recognitionLevel = fast ? .fast : .accurate
         request.recognitionLanguages = [language]
         request.usesLanguageCorrection = true
         try VNImageRequestHandler(cgImage: image).perform([request])
@@ -121,6 +130,23 @@ public struct VisionReader: TextReader {
     private static func stripRect(of image: CGImage, widthFraction: Double) -> CGRect {
         let width = Double(image.width) * widthFraction
         return CGRect(x: (Double(image.width) - width) / 2, y: 0, width: width, height: Double(image.height)).integral
+    }
+
+    private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+
+    /// Küçük telefon/bildirim yazılarını OCR öncesi 2× büyütüp hafif kontrast ve keskinlik uygular.
+    /// Vision kutuları 0–1 oranında döndüğü için koordinatlar değişmez; "Bren/suttacad" gibi küçük font hatalarını giderir.
+    public static func enhanceSmallText(_ image: CGImage) -> CGImage {
+        let base = image.width < 640 ? (scaled(image, by: 2) ?? image) : image
+        let input = CIImage(cgImage: base)
+        let contrasted = input.applyingFilter("CIColorControls", parameters: [
+            kCIInputContrastKey: 1.14,
+            kCIInputSaturationKey: 1.0
+        ])
+        let sharpened = contrasted.applyingFilter("CISharpenLuminance", parameters: [
+            kCIInputSharpnessKey: 0.42
+        ])
+        return ciContext.createCGImage(sharpened, from: sharpened.extent) ?? base
     }
 
     private static func scaled(_ image: CGImage, by factor: Int) -> CGImage? {

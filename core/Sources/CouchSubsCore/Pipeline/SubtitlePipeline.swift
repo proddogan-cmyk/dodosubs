@@ -119,6 +119,11 @@ public final class SubtitlePipeline {
     private var currentRead = ReadInfo(capturedAt: 0)
 
     public private(set) var lastPair: (source: String, translation: String)?
+    /// Şu an ekranda aktif olan İngilizce ana altyazı (ek alanlarda altyazı sızıntısını ayıklamak için).
+    public var currentSourceSubtitle: String? {
+        if lineOnScreen != nil { return lastPair?.source ?? held?.source }
+        return held?.source
+    }
     /// Son gösterilen çevirinin oyundaki altyazının yeri.
     public private(set) var lastBox: TextBox?
     public private(set) var lastError: TranslatorError?
@@ -425,6 +430,13 @@ public final class SubtitlePipeline {
         if skipsTurkish, TurkishText.isSure(source) {
             remember(request.number, source, nil)
             log(request, "\(SubtitleLog.excerpt(source)) → zaten Türkçe, çevrilmedi")
+            return
+        }
+        // Hiç harfi olmayan okuma (hız göstergesi "20 40 60 80", plaka, sayaç "1 / 3") çevrilecek yazı değildir;
+        // çevirmen onu aynen geri veriyor, satır yine gösterilmiyordu ama her biri ücretli bir istek oluyordu.
+        if !source.contains(where: \.isLetter) {
+            remember(request.number, source, nil)
+            log(request, "\(SubtitleLog.excerpt(source)) → harf yok, çevrilmedi")
             return
         }
         onPackMiss?(source)

@@ -373,6 +373,7 @@ private struct ExtraAreaEditor: View {
     let id: String
     @Binding var settings: UserSettings
     @ObservedObject var preview: FramePreview
+    @State private var captureFailed = false
 
     var body: some View {
         if let area = settings.extraAreas.first(where: { $0.id == id }) {
@@ -390,20 +391,271 @@ private struct ExtraAreaEditor: View {
                 Picker("Area preset", selection: Binding(get: { ExtraAreaPreset.matching(area.region) },
                                                          set: { preset in
                     guard let preset else { return }
-                    settings.updateExtraArea(id: id) { $0.region = preset.region }
+                    captureFailed = false
+                    settings.updateExtraArea(id: id) {
+                        $0.region = preset.region
+                        $0.onlyWhenVisible = preset == .phone
+                        $0.presentation = preset == .phone ? .sideBubble : .overlay
+                        $0.panelTemplates = []
+                    }
                 })) {
                     ForEach(ExtraAreaPreset.allCases, id: \.self) { preset in Text(preset.title).tag(Optional(preset)) }
                     Text("Custom").tag(ExtraAreaPreset?.none)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                RegionPreview(region: area.region, frame: preview.image) { region in
+                let liveScore: Double? = (area.onlyWhenVisible && !area.panelTemplates.isEmpty)
+                    ? preview.image.map { PanelPresence.bestSimilarity(of: RegionCropper.crop($0, to: area.region), templates: area.panelTemplates) }
+                    : nil
+                let liveDetected = liveScore.map { $0 >= area.panelThreshold } ?? false
+                let innerGuide: CropRegion? = (area.onlyWhenVisible && area.cropInnerScreen && !area.panelTemplates.isEmpty)
+                    ? area.ocrRegion
+                    : nil
+
+                let badge: (text: LocalizedStringKey, active: Bool)? = liveScore != nil
+                    ? (liveDetected ? "Phone open" : "Closed / waiting", liveDetected)
+                    : nil
+
+                RegionPreview(
+                    region: area.region,
+                    frame: preview.image,
+                    innerRegion: innerGuide,
+                    frameColor: liveDetected ? .green : .csAccent,
+                    showSideBubblePreview: area.onlyWhenVisible && area.presentation == .sideBubble,
+                    bubbleTheme: area.bubbleTheme,
+                    liveBadge: badge
+                ) { region in
                     settings.updateExtraArea(id: id) { $0.region = region }
                 }
                 .opacity(area.enabled ? 1 : 0.5)
+
+                Toggle("Only when panel is open", isOn: Binding(get: { area.onlyWhenVisible },
+                                                                set: { on in
+                    captureFailed = false
+                    settings.updateExtraArea(id: id) { $0.onlyWhenVisible = on }
+                }))
+                .toggleStyle(.switch)
+                .tint(Color.csAccent)
+                .opacity(area.enabled ? 1 : 0.5)
+
+                if area.onlyWhenVisible {
+                    VStack(alignment: .leading, spacing: Theme.space("s")) {
+                        if area.panelTemplates.isEmpty {
+                            HintText(text: "1. Open the phone in-game and fit the box around its outer frame.\n2. Click \"Learn phone\" below. (Auto-detection is active until then.)")
+                        }
+
+                        if let score = liveScore {
+                            PanelMatchMeter(score: score, threshold: area.panelThreshold, detected: liveDetected)
+                        } else if !area.panelTemplates.isEmpty {
+                            Text("Learned views: \(area.panelTemplates.count)/\(ExtraArea.maxTemplates)")
+                                .font(.caption)
+                                .foregroundStyle(Color.csSecondary)
+                        }
+
+                        HStack(spacing: Theme.space("s")) {
+                            Button(area.panelTemplates.isEmpty
+                                   ? LocalizedStringKey("Learn phone")
+                                   : LocalizedStringKey("Add view (\(area.panelTemplates.count)/\(ExtraArea.maxTemplates))")) {
+                                guard let frame = preview.image else { return }
+                                let crop = RegionCropper.crop(frame, to: area.region)
+                                if let template = PanelTemplate.capture(from: crop) {
+                                    captureFailed = false
+                                    settings.updateExtraArea(id: id) {
+                                        if $0.panelTemplates.count < ExtraArea.maxTemplates {
+                                            $0.panelTemplates.append(template)
+                                        }
+                                    }
+                                } else {
+                                    captureFailed = true
+                                }
+                            }
+                            .buttonStyle(.secondary)
+                            .disabled(preview.image == nil || area.panelTemplates.count >= ExtraArea.maxTemplates)
+
+                            if !area.panelTemplates.isEmpty {
+                                Button("Reset views") {
+                                    captureFailed = false
+                                    settings.updateExtraArea(id: id) { $0.panelTemplates = [] }
+                                }
+                                .buttonStyle(.secondary)
+                            }
+                        }
+
+                        if !area.panelTemplates.isEmpty {
+                            HStack(spacing: Theme.space("s")) {
+                                Text("Sensitivity")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.csSecondary)
+                                Slider(value: Binding(
+                                    get: { area.panelThreshold },
+                                    set: { value in settings.updateExtraArea(id: id) { $0.panelThreshold = PanelPresence.clampedThreshold(value) } }
+                                ), in: PanelPresence.minThreshold...PanelPresence.maxThreshold, step: 0.02)
+                                .tint(Color.csAccent)
+                                Text("\(Int((area.panelThreshold * 100).rounded()))%")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(Color.csSecondary)
+                                    .frame(width: 34, alignment: .trailing)
+                            }
+
+                            Toggle("Ignore outer bezel & status bar", isOn: Binding(
+                                get: { area.cropInnerScreen },
+                                set: { on in settings.updateExtraArea(id: id) { $0.cropInnerScreen = on } }
+                            ))
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                            .tint(Color.csAccent)
+                            .font(.caption)
+                        }
+
+                        Toggle("Show as frosted bubble next to phone", isOn: Binding(
+                            get: { area.presentation == .sideBubble },
+                            set: { on in settings.updateExtraArea(id: id) { $0.presentation = on ? .sideBubble : .overlay } }
+                        ))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .tint(Color.csAccent)
+                        .font(.caption)
+
+                        if area.presentation == .sideBubble {
+                            HStack(spacing: Theme.space("s")) {
+                                BubbleThemeCard(
+                                    title: "Apple Glass",
+                                    selected: area.bubbleTheme == .appleGlass,
+                                    bg: Color(red: 0.10, green: 0.13, blue: 0.20),
+                                    accent: Color.cyan,
+                                    border: Color.white.opacity(0.28)
+                                ) {
+                                    settings.updateExtraArea(id: id) { $0.bubbleTheme = .appleGlass }
+                                }
+                                BubbleThemeCard(
+                                    title: "Vice Neon",
+                                    selected: area.bubbleTheme == .viceNeon,
+                                    bg: Color(red: 0.17, green: 0.08, blue: 0.28),
+                                    accent: Color.pink,
+                                    border: Color.pink.opacity(0.65)
+                                ) {
+                                    settings.updateExtraArea(id: id) { $0.bubbleTheme = .viceNeon }
+                                }
+                                BubbleThemeCard(
+                                    title: "Stealth OLED",
+                                    selected: area.bubbleTheme == .stealthDark,
+                                    bg: Color(red: 0.05, green: 0.06, blue: 0.08),
+                                    accent: Color.orange,
+                                    border: Color.white.opacity(0.16)
+                                ) {
+                                    settings.updateExtraArea(id: id) { $0.bubbleTheme = .stealthDark }
+                                }
+                            }
+
+                            HStack(spacing: Theme.space("s")) {
+                                Text("Bubble size")
+                                    .font(.caption)
+                                    .foregroundStyle(Color.csSecondary)
+                                Slider(value: Binding(
+                                    get: { area.bubbleScale },
+                                    set: { val in settings.updateExtraArea(id: id) { $0.bubbleScale = min(1.30, max(0.85, val)) } }
+                                ), in: 0.85...1.30, step: 0.05)
+                                .tint(Color.csAccent)
+                                Text("\(Int((area.bubbleScale * 100).rounded()))%")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(Color.csSecondary)
+                                    .frame(width: 38, alignment: .trailing)
+                            }
+                        }
+
+                        if captureFailed {
+                            Text("No clear frame found in the current preview.")
+                                .font(.caption)
+                                .foregroundStyle(Color.csWarning)
+                        }
+                    }
+                    .padding(Theme.space("s"))
+                    .background(Color.csSurface.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.radius("inner"), style: .continuous))
+                    .opacity(area.enabled ? 1 : 0.5)
+                }
             }
             .padding(Theme.space("m"))
             .background(Color.csSurface2, in: RoundedRectangle(cornerRadius: Theme.radius("inner"), style: .continuous))
+        }
+    }
+}
+
+/// Görsel tema seçim kartı (Apple Cam / Vice Neon / Sade OLED).
+private struct BubbleThemeCard: View {
+    let title: LocalizedStringKey
+    let selected: Bool
+    let bg: Color
+    let accent: Color
+    let border: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 4) {
+                        Circle().fill(accent).frame(width: 6, height: 6)
+                        Capsule().fill(accent.opacity(0.9)).frame(width: 24, height: 3.5)
+                    }
+                    Capsule().fill(Color.white.opacity(0.88)).frame(maxWidth: .infinity).frame(height: 3.5)
+                    Capsule().fill(Color.white.opacity(0.45)).frame(width: 44, height: 3.5)
+                }
+                .padding(7)
+                .background(bg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(border, lineWidth: 1))
+
+                Text(title)
+                    .font(.caption2.weight(selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? Color.csText : Color.csSecondary)
+                    .lineLimit(1)
+            }
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Color.csAccent.opacity(0.14) : Color.csSurface2.opacity(0.5),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(selected ? Color.csAccent : Color.csBorder.opacity(0.4), lineWidth: selected ? 1.5 : 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Canlı telefon/panel eşleşme yüzdesi ve eşik çizgisi göstergesi.
+private struct PanelMatchMeter: View {
+    let score: Double
+    let threshold: Double
+    let detected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(detected ? Color.green : Color.csSecondary.opacity(0.5))
+                    .frame(width: 8, height: 8)
+                Text(detected ? "Phone open" : "Closed / waiting")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(detected ? Color.csText : Color.csSecondary)
+                Spacer(minLength: 0)
+                Text("\(Int((score * 100).rounded()))%")
+                    .font(.caption.monospacedDigit().weight(.medium))
+                    .foregroundStyle(detected ? Color.green : Color.csSecondary)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.csBorder.opacity(0.4))
+                    Capsule()
+                        .fill(detected ? Color.green : Color.csSecondary.opacity(0.45))
+                        .frame(width: max(0, min(geo.size.width, geo.size.width * score)))
+                    Rectangle()
+                        .fill(Color.csText.opacity(0.75))
+                        .frame(width: 2, height: 10)
+                        .offset(x: max(0, min(geo.size.width - 2, geo.size.width * threshold)))
+                }
+            }
+            .frame(height: 6)
         }
     }
 }

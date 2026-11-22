@@ -37,26 +37,65 @@
     init: function () {
       var CLIENT = 'com.couchsubs.tv';
       try {
-        var register = new PalmServiceBridge();
-        register.onservicecallback = function (message) {
-          var request;
-          try { request = JSON.parse(message); } catch (e) { return; }
-          if (!request) return;
-          // Panelin tanı satırı için: servis izin vermediyse sebebi, verdiyse ertelenen istek sayısı.
-          if (request.returnValue === false) window.__screenSaverStatus = 'denied: ' + (request.errorText || request.errorCode);
-          if (request.timestamp === undefined) return;
-          window.__screenSaverCount = (window.__screenSaverCount || 0) + 1;
-          window.__screenSaverStatus = 'deferred ' + window.__screenSaverCount;
-          var reply = new PalmServiceBridge();
-          reply.call('luna://com.webos.service.tvpower/power/responseScreenSaverRequest',
-            JSON.stringify({ clientName: CLIENT, ack: false, timestamp: request.timestamp }));
-          window.__screenSaverReply = reply;
-        };
-        register.call('luna://com.webos.service.tvpower/power/registerScreenSaverRequest',
-          JSON.stringify({ subscribe: true, clientName: CLIENT }));
-        // Köprü nesnesi çöpe gitmesin; abonelik uygulama açık kaldıkça sürer.
-        window.__screenSaverBridge = register;
+        if (window.PalmSystem) window.PalmSystem.keepAlive = true;
+        if (window.webOSSystem) window.webOSSystem.keepAlive = true;
       } catch (e) {}
+
+      function registerSaver() {
+        try {
+          var register = new PalmServiceBridge();
+          register.onservicecallback = function (message) {
+            var request;
+            try { request = JSON.parse(message); } catch (e) { return; }
+            if (!request) return;
+            // Panelin tanı satırı için: servis izin vermediyse sebebi, verdiyse ertelenen istek sayısı.
+            if (request.returnValue === false) window.__screenSaverStatus = 'denied: ' + (request.errorText || request.errorCode);
+            if (request.timestamp === undefined) return;
+            window.__screenSaverCount = (window.__screenSaverCount || 0) + 1;
+            window.__screenSaverStatus = 'deferred ' + window.__screenSaverCount;
+            var reply = new PalmServiceBridge();
+            reply.call('luna://com.webos.service.tvpower/power/responseScreenSaverRequest',
+              JSON.stringify({ clientName: CLIENT, ack: false, timestamp: request.timestamp }));
+            window.__screenSaverReply = reply;
+          };
+          register.call('luna://com.webos.service.tvpower/power/registerScreenSaverRequest',
+            JSON.stringify({ subscribe: true, clientName: CLIENT }));
+          // Köprü nesnesi çöpe gitmesin; abonelik uygulama açık kaldıkça sürer.
+          window.__screenSaverBridge = register;
+        } catch (e) {}
+      }
+
+      // Yeni webOS (23/24/25+) sürümlerinde HDMI üstü katman açıkken kumandaya basılmadığı için TV bazen
+      // 2-3 dakikada ekran koruyucuya geçebiliyor. 45 saniyede bir çok katmanlı canlılık sinyali bunu engeller.
+      function keepScreenAwake() {
+        try {
+          if (window.PalmSystem) window.PalmSystem.keepAlive = true;
+          if (window.webOSSystem) window.webOSSystem.keepAlive = true;
+        } catch (e) {}
+        try {
+          var wake = new PalmServiceBridge();
+          wake.call('luna://com.webos.service.tvpower/power/turnOffScreenSaver', '{}');
+          window.__screenSaverWake = wake;
+        } catch (e) {}
+        try {
+          var reset = new PalmServiceBridge();
+          reset.call('luna://com.webos.service.tvpower/power/resetScreenSaverTimer', '{}');
+          window.__screenSaverReset = reset;
+        } catch (e) {}
+        try {
+          var disp = new PalmServiceBridge();
+          disp.call('luna://com.palm.display/control/setProperty', JSON.stringify({ timeout: 0 }));
+          window.__displayWake = disp;
+        } catch (e) {}
+        try {
+          var video = document.querySelector('#video-host video');
+          if (video && video.paused) video.play();
+        } catch (e) {}
+      }
+
+      registerSaver();
+      keepScreenAwake();
+      window.__screenSaverTimer = setInterval(keepScreenAwake, 45000);
     },
 
     launchParams: function () {

@@ -104,7 +104,7 @@ public enum SubtitleEvent: Equatable, Sendable {
     /// "Ekranı çevir" çevirileri kaldırıldı.
     case screenClear
     /// Ek alanın (görev, telefon, bildirim) çevirisi; `text` boşsa o alanın kutusu kalkar.
-    case region(id: String, text: String, box: TextBox?)
+    case region(id: String, text: String, box: TextBox?, presentation: RegionPresentation = .overlay, theme: BubbleTheme = .appleGlass)
     /// Bütün ek alan kutuları kalktı (çeviri durdu).
     case regionClear
 }
@@ -258,6 +258,8 @@ public final class SubtitleServer: @unchecked Sendable {
         var result: [String: Any] = ["box": Self.json(item.box), "line": line, "text": item.translation]
         if item.paragraphs { result["paragraphs"] = true }
         if let icons = item.icons, !icons.isEmpty { result["icons"] = Self.json(icons) }
+        if let sender = item.sender, !sender.isEmpty { result["sender"] = sender }
+        if let senderColor = item.senderColor, !senderColor.isEmpty { result["senderColor"] = senderColor }
         return result
     }
 
@@ -320,13 +322,31 @@ public final class SubtitleServer: @unchecked Sendable {
     /// uygulamaları birleşik `text`'i tek kutuda gösterir (Windows ile aynı).
     public func sendRegion(id: String, text: String, box: TextBox?, lineHeight: Double?, icons: [IconPlacement]?,
                            blocks: [ScreenTranslation.Item]?) {
+        sendRegion(id: id, text: text, box: box, lineHeight: lineHeight, icons: icons, blocks: blocks,
+                   presentation: .overlay, anchor: nil, options: BubbleOptions())
+    }
+
+    /// `presentation`: `.sideBubble` ise TV/ekran çeviriyi telefonun hemen yanında buzlu cam konuşma balonu olarak
+    /// gösterir; `anchor` telefonun dış çerçeve konumudur. `options` tema, ölçek, uygulama düzeni ve shimmer bilgisini taşır.
+    public func sendRegion(id: String, text: String, box: TextBox?, lineHeight: Double?, icons: [IconPlacement]?,
+                           blocks: [ScreenTranslation.Item]?, presentation: RegionPresentation, anchor: TextBox?,
+                           options: BubbleOptions = BubbleOptions()) {
         var json: [String: Any] = ["id": id, "text": text]
         if let icons, !icons.isEmpty { json["icons"] = Self.json(icons) }
         if let blocks, !blocks.isEmpty, !text.isEmpty { json["blocks"] = blocks.map { Self.json($0) } }
         if let box { json["box"] = Self.json(box) }
         if let lineHeight { json["line"] = Decimal(Int((max(0, min(1, lineHeight)) * 10000).rounded())) / 10000 }
+        if presentation == .sideBubble {
+            json["style"] = presentation.rawValue
+            json["theme"] = options.theme.rawValue
+            json["scale"] = Decimal(Int((options.scale * 100).rounded())) / 100
+            if let layout = options.layout { json["layout"] = layout.rawValue }
+            if let anchor { json["anchor"] = Self.json(anchor) }
+            if options.loading { json["loading"] = true }
+            if let holdMs = options.holdMs, holdMs > 0 { json["holdMs"] = holdMs }
+        }
         broadcast(event: "region", json: json)
-        onEvent?(.region(id: id, text: text, box: box))
+        onEvent?(.region(id: id, text: text, box: box, presentation: presentation, theme: options.theme))
     }
 
     /// Bütün ek alan kutularını kaldırır.

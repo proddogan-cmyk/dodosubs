@@ -27,13 +27,20 @@ public enum ScreenTranslation {
         public var lineHeight: Double
         /// Çevirinin içindeki kumanda simgeleri (kareden kesilmiş); TV `translation`'ın o yerine koyar.
         public var icons: [IconPlacement]?
+        /// Telefon mesajlarında gönderen adı (çevrilmeden vurgulu başlık olarak gösterilir).
+        public var sender: String?
+        /// Gönderen adının karakter imza rengi ("#fb7185" vb.).
+        public var senderColor: String?
 
-        public init(source: String, translation: String, box: TextBox, lineHeight: Double, icons: [IconPlacement]? = nil) {
+        public init(source: String, translation: String, box: TextBox, lineHeight: Double,
+                    icons: [IconPlacement]? = nil, sender: String? = nil, senderColor: String? = nil) {
             self.source = source
             self.translation = translation
             self.box = box
             self.lineHeight = lineHeight
             self.icons = icons
+            self.sender = sender
+            self.senderColor = senderColor
         }
 
         /// Birden çok parça var: TV satır satır, sola yaslı gösterir.

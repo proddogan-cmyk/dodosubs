@@ -302,7 +302,7 @@ struct SubtitleOverlayView: View {
             .gesture(moveGesture)
     }
 
-    /// Ek alanın çevirisi: altyazıdan küçük, koyu zeminli kutu; oyundaki yazının bulunduğu yana yaslı.
+    /// Ek alanın çevirisi: normal alanlarda koyu kutu, telefon yan balonunda buzlu cam (`.ultraThinMaterial`) balon.
     private func regionBox(_ region: OverlayRegion) -> some View {
         let style = model.settings.style
         let size = max(12, CGFloat(style.fontSize) * scale * 0.55)
@@ -311,17 +311,45 @@ struct SubtitleOverlayView: View {
         case .center: .center
         case .trailing: .trailing
         }
-        return Text(verbatim: region.text)
+        let isBubble = region.presentation == .sideBubble
+        let corner = (isBubble ? 14 : 8) * scale
+        let content = Text(verbatim: region.text)
             .font(.system(size: size, weight: .semibold))
             .foregroundStyle(Self.color(style.textColor))
+            .shadow(color: .black.opacity(isBubble ? 0.55 : 0), radius: 2 * scale, x: 0, y: 1 * scale)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.vertical, 6 * scale)
-            .padding(.horizontal, 14 * scale)
-            .background(Color.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 8 * scale))
-            .frame(maxWidth: .infinity, alignment: alignment)
-            .contentShape(Rectangle())
-            .gesture(moveGesture)
+            .padding(.vertical, (isBubble ? 10 : 6) * scale)
+            .padding(.horizontal, (isBubble ? 16 : 14) * scale)
+        return Group {
+            if isBubble {
+                let borderTint: Color = switch region.theme {
+                case .appleGlass: Color.white.opacity(0.26)
+                case .viceNeon: Color.pink.opacity(0.65)
+                case .stealthDark: Color.white.opacity(0.14)
+                }
+                let glassTint: Color = switch region.theme {
+                case .appleGlass: Color(red: 0.08, green: 0.11, blue: 0.18).opacity(0.42)
+                case .viceNeon: Color(red: 0.15, green: 0.06, blue: 0.25).opacity(0.54)
+                case .stealthDark: Color(red: 0.04, green: 0.05, blue: 0.07).opacity(0.75)
+                }
+                content
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
+                    .background(glassTint, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: corner, style: .continuous)
+                            .strokeBorder(borderTint, lineWidth: 1)
+                    )
+                    .shadow(color: region.theme == .viceNeon ? Color.pink.opacity(0.24) : .black.opacity(0.35),
+                            radius: 14 * scale, x: 0, y: 6 * scale)
+            } else {
+                content
+                    .background(Color.black.opacity(0.85), in: RoundedRectangle(cornerRadius: corner))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: alignment)
+        .contentShape(Rectangle())
+        .gesture(moveGesture)
     }
 
     /// TV uygulamasındaki renklerle aynı (beyaz, #FFE135).

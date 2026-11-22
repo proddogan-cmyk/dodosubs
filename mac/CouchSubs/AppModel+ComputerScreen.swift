@@ -9,6 +9,10 @@ struct OverlayRegion: Equatable, Identifiable {
     let text: String
     /// Yazının oyun karesindeki yeri; pencerede kutu bu yana yaslanır.
     let box: TextBox?
+    /// Gösterim biçimi (üstünde koyu kutu mu, buzlu cam yan balon mu).
+    let presentation: RegionPresentation
+    /// Yan balon görsel teması.
+    let theme: BubbleTheme
 
     /// Ekranın solundaki alan sola, sağındaki sağa, ortadaki ortaya.
     var side: HorizontalPlacement {
@@ -51,9 +55,9 @@ extension AppModel {
         case .clear:
             if overlayScreenUntil <= now { overlayStack.clear(now: now) }
         // Ek alanların çevirisi altyazının üstünde, alanın bulunduğu yana yaslı küçük kutularda durur.
-        case .region(let id, let text, let box):
+        case .region(let id, let text, let box, let presentation, let theme):
             var regions = overlayRegions.filter { $0.id != id }
-            if !text.isEmpty { regions.append(OverlayRegion(id: id, text: text, box: box)) }
+            if !text.isEmpty { regions.append(OverlayRegion(id: id, text: text, box: box, presentation: presentation, theme: theme)) }
             overlayRegions = regions.sorted { ($0.box?.top ?? 0) < ($1.box?.top ?? 0) }
             return
         case .regionClear:
