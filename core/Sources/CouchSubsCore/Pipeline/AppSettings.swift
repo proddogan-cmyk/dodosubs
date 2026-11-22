@@ -8,6 +8,11 @@ public enum StoreKey {
     public static let console = "console"
     public static let tv = "tv"
     public static let tvKey = "tvKey"
+    /// LG SSAP izin kapsamı sürümü (eski anahtarda kumanda/ekran koruyucu izni yoksa tek seferlik yükseltme yapılır).
+    public static func tvKeyPermissionVersion(host: String) -> String {
+        "tvKeyPermVersion.\(host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
+    }
+    public static let currentLGPermissionVersion = 2
     public static let tvDevKey = "tvDevKey"
     /// Samsung ve Android TV'ye CouchSubs'ın kurduğu sürüm (LG'de sürüm TV'den okunur).
     public static let tvAppVersion = "tvAppVersion"

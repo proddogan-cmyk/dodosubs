@@ -176,7 +176,7 @@ final class SSAPClientTests: XCTestCase {
         client.close()
     }
 
-    func testKeepScreenAwakeOpensPointerSocketAndReusesIt() async throws {
+    func testKeepScreenAwakeOpensFreshPointerSocketPerPulse() async throws {
         let pointer = try FakePointerSocket()
         let pointerPort = await pointer.start()
         defer { pointer.stop() }
@@ -195,7 +195,28 @@ final class SSAPClientTests: XCTestCase {
 
         XCTAssertEqual(commands, [SSAPClient.keepAwakeCommand, SSAPClient.keepAwakeCommand])
         let pointerRequests = tv.receivedURIs.filter { $0.hasSuffix("getPointerInputSocket") }
-        XCTAssertEqual(pointerRequests.count, 1, "açık pointer soketi yeniden kullanılmalı")
+        XCTAssertEqual(pointerRequests.count, 2, "her canlılık sinyali ölü CLOSE_WAIT soket bırakmadan taze soket açmalı")
+        client.close()
+    }
+
+    func testNeedsPermissionUpgradeForcesPairingOnceAndMarksUpgraded() async throws {
+        let tv = try FakeLGTV()
+        let port = await tv.start()
+        defer { tv.stop() }
+
+        let savedKeys = KeyBox()
+        let upgradedFlag = Flag()
+        let client = SSAPClient(endpoints: [URL(string: "ws://127.0.0.1:\(port)")!], clientKey: "legacy-key",
+                                needsPermissionUpgrade: true,
+                                onClientKey: { savedKeys.append($0) },
+                                onPermissionsUpgraded: { upgradedFlag.value = true })
+        let key = try await client.connect()
+
+        XCTAssertEqual(key, "upgraded-key")
+        XCTAssertEqual(savedKeys.values.last, "upgraded-key")
+        XCTAssertTrue(upgradedFlag.value)
+        XCTAssertEqual(tv.registerPayloads.first?["forcePairing"] as? Bool, true)
+        XCTAssertNil(tv.registerPayloads.first?["client-key"])
         client.close()
     }
 

@@ -19,6 +19,8 @@ final class SSAPMessagesTests: XCTestCase {
         XCTAssertTrue(permissions.contains("LAUNCH"))
         XCTAssertTrue(permissions.contains("READ_RUNNING_APPS"))
         XCTAssertTrue(permissions.contains("CONTROL_MOUSE_AND_KEYBOARD"))
+        XCTAssertTrue(permissions.contains("CONTROL_INPUT_JOYSTICK"))
+        XCTAssertTrue(permissions.contains("CONTROL_POWER"))
     }
 
     func testRegisterSupportsForcePairingForPermissionUpgrade() throws {

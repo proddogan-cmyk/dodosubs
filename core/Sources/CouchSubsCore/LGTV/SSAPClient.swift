@@ -53,19 +53,25 @@ public final class SSAPClient: NSObject, TVControlling, URLSessionDelegate, @unc
     private let approvalTimeout: Duration
     private let handshakeTimeout: Duration
     private let onClientKey: (@Sendable (String) -> Void)?
+    private let onPermissionsUpgraded: (@Sendable () -> Void)?
     private var clientKey: String?
+    private var needsPermissionUpgrade: Bool
     private var session: URLSession!
     private var socket: URLSessionWebSocketTask?
     private var activeEndpoint: URL?
-    private var pointerSocket: URLSessionWebSocketTask?
     private var pointerHost: String?
     private var permissionUpgradeAttempted = false
-    private var loggedFirstKeepAwake = false
+    private var keepAwakeCount = 0
+    private var turnOffScreenSaverSupported: Bool?
     private var nextId = 1
 
     /// Önce şifreli (3001), olmazsa düz (3000) bağlantı denenir; eski webOS'lar yalnız 3000'i açar.
-    public convenience init(tv: LGTV, clientKey: String?, onClientKey: (@Sendable (String) -> Void)? = nil) {
-        self.init(endpoints: Self.endpoints(host: tv.host), clientKey: clientKey, onClientKey: onClientKey)
+    public convenience init(tv: LGTV, clientKey: String?, needsPermissionUpgrade: Bool = false,
+                            onClientKey: (@Sendable (String) -> Void)? = nil,
+                            onPermissionsUpgraded: (@Sendable () -> Void)? = nil) {
+        self.init(endpoints: Self.endpoints(host: tv.host), clientKey: clientKey,
+                  needsPermissionUpgrade: needsPermissionUpgrade, onClientKey: onClientKey,
+                  onPermissionsUpgraded: onPermissionsUpgraded)
     }
 
     /// Adres URL'ye dönüşmezse (ör. elle yazılmış "192.168.1.5:3000") liste boş kalır ve `connect` `cannotConnect`
@@ -75,29 +81,52 @@ public final class SSAPClient: NSObject, TVControlling, URLSessionDelegate, @unc
     }
 
     init(endpoints: [URL], clientKey: String?, approvalTimeout: Duration = .seconds(60),
-         handshakeTimeout: Duration = .seconds(5), onClientKey: (@Sendable (String) -> Void)? = nil) {
+         handshakeTimeout: Duration = .seconds(5), needsPermissionUpgrade: Bool = false,
+         onClientKey: (@Sendable (String) -> Void)? = nil,
+         onPermissionsUpgraded: (@Sendable () -> Void)? = nil) {
         self.endpoints = endpoints
         self.clientKey = clientKey
         self.approvalTimeout = approvalTimeout
         self.handshakeTimeout = handshakeTimeout
+        self.needsPermissionUpgrade = needsPermissionUpgrade
         self.onClientKey = onClientKey
+        self.onPermissionsUpgraded = onPermissionsUpgraded
         super.init()
         session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
     }
 
     /// Eşleşir ve client-key'i döner. Kullanıcı TV'de onay verene kadar bekler (en çok 60 sn).
+    /// `needsPermissionUpgrade` açıksa eski anahtarda eksik olan kumanda/güç izinlerini almak için önce tek seferlik
+    /// taze onay ister; kullanıcı reddeder ya da zaman aşımına uğrarsa mevcut anahtarla devam eder.
     public func connect() async throws -> String {
+        if needsPermissionUpgrade && clientKey != nil && !permissionUpgradeAttempted {
+            permissionUpgradeAttempted = true
+            SubtitleLog.write("LG TV ekran koruyucu önlemi: eski eşleşmede kumanda izni eksik — TV'de tek seferlik 'Kabul Et' onayı isteniyor")
+            do {
+                let upgradedKey = try await connectOnce(key: nil, forcePairing: true)
+                needsPermissionUpgrade = false
+                onPermissionsUpgraded?()
+                SubtitleLog.write("LG TV ekran koruyucu önlemi: yeni kumanda/güç izinleri onaylandı ve kalıcı olarak kaydedildi")
+                return upgradedKey
+            } catch {
+                SubtitleLog.write("LG TV izin yükseltme tamamlanmadı (\(error)); mevcut eşleşme ile devam ediliyor")
+            }
+        }
+        return try await connectOnce(key: clientKey, forcePairing: false)
+    }
+
+    private func connectOnce(key: String?, forcePairing: Bool) async throws -> String {
         for url in endpoints {
             let task = session.webSocketTask(with: url)
             task.resume()
             do {
-                try await sendRegistration(on: task, clientKey: clientKey)
-                let key = try await waitForRegistration(on: task)
+                try await sendRegistration(on: task, clientKey: key, forcePairing: forcePairing)
+                let receivedKey = try await waitForRegistration(on: task)
                 socket = task
                 activeEndpoint = url
-                clientKey = key
-                onClientKey?(key)
-                return key
+                clientKey = receivedKey
+                onClientKey?(receivedKey)
+                return receivedKey
             } catch SSAPError.rejected(let reason) {
                 task.cancel()
                 throw SSAPError.rejected(reason)
@@ -109,12 +138,10 @@ public final class SSAPClient: NSObject, TVControlling, URLSessionDelegate, @unc
     }
 
     public func close() {
-        pointerSocket?.cancel(with: .normalClosure, reason: nil)
-        pointerSocket = nil
-        pointerHost = nil
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
         activeEndpoint = nil
+        pointerHost = nil
         // URLSession temsilcisini (self) güçlü tutar; kapatılmazsa istemci hiç bırakılmaz.
         session.invalidateAndCancel()
     }
@@ -129,33 +156,87 @@ public final class SSAPClient: NSObject, TVControlling, URLSessionDelegate, @unc
         return response["appId"] as? String ?? ""
     }
 
-    /// LG webOS OLED'de 3 dakikalık saat ekran koruyucusunu kalıcı olarak engellemek için kumanda giriş soketinden
-    /// görünmez bir tuş sinyali yollar. Eski eşleşme kumanda izni içermiyorsa bir kez izin yükseltme ister.
-    /// Hata fırlatmaz: soket desteklenmeyen TV'lerde ana bağlantıyı düşürmez.
+    /// LG webOS OLED'de 3 dakikalık saat ekran koruyucusunu kalıcı olarak engellemek için her döngüde taze bir
+    /// kumanda giriş soketi açıp görünmez `YELLOW` tuş sinyali gönderir ve soketi temizce kapatır (LG TV boşta kalan
+    /// pointer soketini kapattığı için önbelleğe alınan soket `CLOSE_WAIT`'te ölü kalıyordu). Ayrıca destekleyen
+    /// modellerde `turnOffScreenSaver` servisini de tetikler. Hata fırlatmaz.
     public func keepScreenAwake() async {
         guard socket != nil else { return }
-        if let existing = pointerSocket, existing.state == .running {
+
+        // 1. Destekleniyorsa doğrudan tvpower servisiyle ekran koruyucu sayacını/ekranını sıfırla (desteklenmezse bir daha deneme).
+        if turnOffScreenSaverSupported != false {
             do {
-                try await sendText(Self.keepAwakeCommand, on: existing)
-                return
+                let raw = try await request("ssap://com.webos.service.tvpower/power/turnOffScreenSaver", payload: nil)
+                let ok = (raw["returnValue"] as? Bool) ?? true
+                if turnOffScreenSaverSupported == nil {
+                    turnOffScreenSaverSupported = ok
+                    SubtitleLog.write("LG TV turnOffScreenSaver: \(ok ? "destekleniyor" : "reddedildi (\(raw["errorText"] ?? ""))")")
+                }
             } catch {
-                existing.cancel()
-                pointerSocket = nil
+                if turnOffScreenSaverSupported == nil {
+                    turnOffScreenSaverSupported = false
+                    SubtitleLog.write("LG TV turnOffScreenSaver desteklenmiyor: \(error)")
+                }
             }
         }
 
+        // 2. Taze pointer giriş soketi aç, görünmez YELLOW tuşu gönder, kısa süre olası ret çerçevesini dinle, sonra kapat.
+        var task: URLSessionWebSocketTask?
+        defer { task?.cancel(with: .normalClosure, reason: nil) }
         do {
             let fresh = try await openPointerSocket(allowPermissionUpgrade: true)
+            task = fresh
             try await sendText(Self.keepAwakeCommand, on: fresh)
-            pointerSocket = fresh
-            if !loggedFirstKeepAwake {
-                loggedFirstKeepAwake = true
-                SubtitleLog.write("LG TV ekran koruyucu önlemi etkin (donanım canlılık sinyali gönderildi)")
+            let serverClose = await sniffImmediateClose(on: fresh)
+            keepAwakeCount += 1
+            if let serverClose {
+                SubtitleLog.write("LG TV ekran koruyucu sinyali #\(keepAwakeCount) sonrası soket kapandı: \(serverClose)")
+            } else if keepAwakeCount <= 5 {
+                SubtitleLog.write("LG TV ekran koruyucu önlemi #\(keepAwakeCount): taze soketten sinyal gönderildi")
             }
         } catch {
-            pointerSocket?.cancel()
-            pointerSocket = nil
             SubtitleLog.write("LG TV ekran koruyucu önlemi gönderilemedi: \(error)")
+        }
+    }
+
+    /// Gönderimden hemen sonra LG TV soketi hata/yetki koduyla kapatıyorsa bunu yakalar; 120 ms sessizse
+    /// soketi temizce kapatıp döner (`receive()` Task iptaline yanıt vermediği için kapatma burada yapılır).
+    private func sniffImmediateClose(on task: URLSessionWebSocketTask) async -> String? {
+        final class AtomicBool: @unchecked Sendable {
+            private let lock = NSLock()
+            private var flag = false
+            var value: Bool {
+                get { lock.withLock { flag } }
+                set { lock.withLock { flag = newValue } }
+            }
+        }
+        let timedOut = AtomicBool()
+        return await withTaskGroup(of: String?.self) { group in
+            group.addTask {
+                do {
+                    let msg = try await task.receive()
+                    switch msg {
+                    case .string(let s): return "msg=\(s)"
+                    case .data(let d): return "bytes=\(d.count)"
+                    @unknown default: return nil
+                    }
+                } catch {
+                    if timedOut.value { return nil }
+                    let code = task.closeCode.rawValue
+                    let reason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                    return "closeCode=\(code) reason=\(reason) err=\(error.localizedDescription)"
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return nil }
+                timedOut.value = true
+                task.cancel(with: .normalClosure, reason: nil)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 
@@ -195,13 +276,13 @@ public final class SSAPClient: NSObject, TVControlling, URLSessionDelegate, @unc
             do {
                 try await sendRegistration(on: upgraded, clientKey: nil, forcePairing: true)
                 let newKey = try await waitForRegistration(on: upgraded)
-                pointerSocket?.cancel(with: .normalClosure, reason: nil)
-                pointerSocket = nil
                 socket?.cancel(with: .normalClosure, reason: nil)
                 socket = upgraded
                 activeEndpoint = url
                 clientKey = newKey
+                needsPermissionUpgrade = false
                 onClientKey?(newKey)
+                onPermissionsUpgraded?()
                 SubtitleLog.write("LG TV ekran koruyucu önlemi: kumanda izni onaylandı ve kalıcı olarak kaydedildi")
                 return
             } catch SSAPError.rejected(let reason) {
@@ -277,22 +358,41 @@ public final class SSAPClient: NSObject, TVControlling, URLSessionDelegate, @unc
         guard let socket else { throw SSAPError.cannotConnect }
         let id = "req_\(nextId)"
         nextId += 1
-        try await socket.send(.string(String(decoding: SSAPMessages.request(id: id, uri: uri, payload: payload), as: UTF8.self)))
-        while true {
-            let message = try await Self.decode(socket.receive())
-            guard message["id"] as? String == id else { continue }
-            if message["type"] as? String == "error" { throw SSAPError.rejected(message["error"] as? String ?? uri) }
-            return message["payload"] as? [String: Any] ?? [:]
+        let text = String(decoding: SSAPMessages.request(id: id, uri: uri, payload: payload), as: UTF8.self)
+        let raw = try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask {
+                try await socket.send(.string(text))
+                while true {
+                    let data = try await Self.rawData(socket.receive())
+                    guard let message = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw SSAPError.badResponse }
+                    guard message["id"] as? String == id else { continue }
+                    if message["type"] as? String == "error" { throw SSAPError.rejected(message["error"] as? String ?? uri) }
+                    return data
+                }
+            }
+            group.addTask { [handshakeTimeout] in
+                try await Task.sleep(for: handshakeTimeout)
+                socket.cancel()
+                throw SSAPError.cannotConnect
+            }
+            defer { group.cancelAll() }
+            guard let reply = try await group.next() else { throw SSAPError.badResponse }
+            return reply
+        }
+        guard let message = try JSONSerialization.jsonObject(with: raw) as? [String: Any] else { throw SSAPError.badResponse }
+        return message["payload"] as? [String: Any] ?? [:]
+    }
+
+    private static func rawData(_ message: URLSessionWebSocketTask.Message) throws -> Data {
+        switch message {
+        case .data(let d): return d
+        case .string(let s): return Data(s.utf8)
+        @unknown default: throw SSAPError.badResponse
         }
     }
 
     private static func decode(_ message: URLSessionWebSocketTask.Message) throws -> [String: Any] {
-        let data: Data
-        switch message {
-        case .data(let d): data = d
-        case .string(let s): data = Data(s.utf8)
-        @unknown default: throw SSAPError.badResponse
-        }
+        let data = try rawData(message)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw SSAPError.badResponse }
         return object
     }
@@ -324,6 +424,7 @@ public final class TVKeeper: @unchecked Sendable {
     private var loop: Task<Void, Never>?
     private var lastLaunch: ContinuousClock.Instant?
     private var lastKeepAwake: ContinuousClock.Instant?
+    private var lastForegroundApp: String?
 
     /// `appConnected` verilirse (Samsung) TV'ye yalnız TV uygulaması bilgisayara bağlı değilken ve en çok
     /// `relaunchInterval`'da bir dokunulur: uygulama açılır, bağlantı hemen kapatılır. Samsung önplandaki uygulamayı
@@ -331,7 +432,7 @@ public final class TVKeeper: @unchecked Sendable {
     /// bağlantı TV'de "uzaktan kumanda bağlandı" bildirimi çıkarıyor, PS5 kolunu düşürüyordu (#5).
     public init(connect: @escaping () async throws -> TVControlling, appId: String, params: [String: Any],
                 appConnected: (@Sendable () -> Bool)? = nil, relaunchInterval: Duration = .seconds(30),
-                keepAwakeInterval: Duration = .seconds(60)) {
+                keepAwakeInterval: Duration = .seconds(45)) {
         self.connect = connect
         self.appId = appId
         self.params = params
@@ -367,6 +468,10 @@ public final class TVKeeper: @unchecked Sendable {
             }
             guard let control else { return }
             let current = try await control.foregroundAppId()
+            if current != lastForegroundApp {
+                lastForegroundApp = current
+                SubtitleLog.write("LG TV önplan uygulaması: \(current.isEmpty ? "(boş)" : current)")
+            }
             if Self.isScreensaver(current) {
                 SubtitleLog.write("LG TV ekran koruyucu algılandı (\(current)) — uygulama öne getiriliyor")
                 await control.keepScreenAwake()

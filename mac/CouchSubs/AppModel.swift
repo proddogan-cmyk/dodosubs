@@ -256,10 +256,21 @@ final class LiveServices: AppServices {
             break
         }
         let token = SamsungTokenHolder(token: key, onChange: onKey)
+        let permKey = StoreKey.tvKeyPermissionVersion(host: tv.host)
+        let upgradeLock = NSLock()
+        var attemptedUpgrade = false
         let locator = TVLocator(tv: tv, connect: { tv in
-            let client = SSAPClient(tv: tv, clientKey: token.current, onClientKey: { newKey in
-                token.received(newKey)
-            })
+            let needsUpgrade: Bool = upgradeLock.withLock {
+                guard !attemptedUpgrade,
+                      UserDefaults.standard.integer(forKey: permKey) < StoreKey.currentLGPermissionVersion else { return false }
+                attemptedUpgrade = true
+                return true
+            }
+            let client = SSAPClient(tv: tv, clientKey: token.current, needsPermissionUpgrade: needsUpgrade,
+                                    onClientKey: { newKey in token.received(newKey) },
+                                    onPermissionsUpgraded: {
+                                        UserDefaults.standard.set(StoreKey.currentLGPermissionVersion, forKey: permKey)
+                                    })
             do {
                 let received = try await client.connect()
                 token.received(received)
@@ -1066,6 +1077,7 @@ final class AppModel: ObservableObject {
         // Daha önce "TV'm yok" seçildiyse TV bağlanınca altyazı TV'ye gider.
         if settings.output == .computer { settings.output = .tv }
         if tv.brand == .lg {
+            defaults.set(StoreKey.currentLGPermissionVersion, forKey: StoreKey.tvKeyPermissionVersion(host: tv.host))
             await refreshTVApp()
         } else {
             // Samsung girişi ya da Android onayı dakikalar sürebilir; eşleşme beklemesin.
