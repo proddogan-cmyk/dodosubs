@@ -374,6 +374,8 @@ private struct ExtraAreaEditor: View {
     @Binding var settings: UserSettings
     @ObservedObject var preview: FramePreview
     @State private var captureFailed = false
+    @State private var liveScore: Double?
+    @State private var scoreTask: Task<Void, Never>?
 
     var body: some View {
         if let area = settings.extraAreas.first(where: { $0.id == id }) {
@@ -404,15 +406,14 @@ private struct ExtraAreaEditor: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                let liveScore: Double? = (area.onlyWhenVisible && !area.panelTemplates.isEmpty)
-                    ? preview.image.map { PanelPresence.bestSimilarity(of: RegionCropper.crop($0, to: area.region), templates: area.panelTemplates) }
-                    : nil
-                let liveDetected = liveScore.map { $0 >= area.panelThreshold } ?? false
+                let activeScore: Double? = (area.onlyWhenVisible && !area.panelTemplates.isEmpty && preview.image != nil)
+                    ? liveScore : nil
+                let liveDetected = activeScore.map { $0 >= area.panelThreshold } ?? false
                 let innerGuide: CropRegion? = (area.onlyWhenVisible && area.cropInnerScreen && !area.panelTemplates.isEmpty)
                     ? area.ocrRegion
                     : nil
 
-                let badge: (text: LocalizedStringKey, active: Bool)? = liveScore != nil
+                let badge: (text: LocalizedStringKey, active: Bool)? = activeScore != nil
                     ? (liveDetected ? "Phone open" : "Closed / waiting", liveDetected)
                     : nil
 
@@ -428,6 +429,22 @@ private struct ExtraAreaEditor: View {
                     settings.updateExtraArea(id: id) { $0.region = region }
                 }
                 .opacity(area.enabled ? 1 : 0.5)
+                .onChange(of: preview.image) { frame in
+                    updateLiveScore(frame: frame, area: area)
+                }
+                .onChange(of: area.panelTemplates) { _ in
+                    updateLiveScore(frame: preview.image, area: area)
+                }
+                .onChange(of: area.region) { _ in
+                    updateLiveScore(frame: preview.image, area: area)
+                }
+                .onAppear {
+                    updateLiveScore(frame: preview.image, area: area)
+                }
+                .onDisappear {
+                    scoreTask?.cancel()
+                    scoreTask = nil
+                }
 
                 Toggle("Only when panel is open", isOn: Binding(get: { area.onlyWhenVisible },
                                                                 set: { on in
@@ -444,7 +461,7 @@ private struct ExtraAreaEditor: View {
                             HintText(text: "1. Open the phone in-game and fit the box around its outer frame.\n2. Click \"Learn phone\" below. (Auto-detection is active until then.)")
                         }
 
-                        if let score = liveScore {
+                        if let score = activeScore {
                             PanelMatchMeter(score: score, threshold: area.panelThreshold, detected: liveDetected)
                         } else if !area.panelTemplates.isEmpty {
                             Text("Learned views: \(area.panelTemplates.count)/\(ExtraArea.maxTemplates)")
@@ -576,6 +593,23 @@ private struct ExtraAreaEditor: View {
             }
             .padding(Theme.space("m"))
             .background(Color.csSurface2, in: RoundedRectangle(cornerRadius: Theme.radius("inner"), style: .continuous))
+        }
+    }
+
+    /// Çerçeve benzerlik hesabını ana iş parçacığı (MainActor) dışında çalıştırarak ayarlar arayüzünü akıcı tutar.
+    private func updateLiveScore(frame: CGImage?, area: ExtraArea) {
+        scoreTask?.cancel()
+        guard area.onlyWhenVisible, !area.panelTemplates.isEmpty, let frame else {
+            liveScore = nil
+            return
+        }
+        let region = area.region
+        let templates = area.panelTemplates
+        scoreTask = Task.detached(priority: .utility) {
+            let crop = RegionCropper.crop(frame, to: region)
+            let score = PanelPresence.bestSimilarity(of: crop, templates: templates)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { liveScore = score }
         }
     }
 }

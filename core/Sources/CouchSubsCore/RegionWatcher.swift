@@ -70,6 +70,8 @@ public final class RegionWatcher {
 
     private struct State {
         var signature: [UInt8]?
+        /// Telefon açıkken dış çerçeve arkasındaki 3B dünya hareket etse bile iç ekran değişmediyse OCR'ı atlamak için.
+        var innerSignature: [UInt8]?
         /// Son okumanın sadeleştirilmiş yazısı; bir sonraki okuma aynıysa yazı kararlıdır.
         var lastRead: String?
         /// Okunmuş ama henüz kararlı sayılmamış yazı.
@@ -417,16 +419,33 @@ public final class RegionWatcher {
         let reader = self.reader
         let useInner = ocrRegion != region
         let useHybridFast = area.onlyWhenVisible && (reader is VisionReader)
-        let (ocrCrop, firstReading) = await Task.detached(priority: .utility) { () -> (CGImage, Reading?) in
+        let checkInnerGate = area.onlyWhenVisible && useInner && !state.shown.isEmpty && !becameVisible && !settledNow && !visibilitySettingsChanged
+        let prevInnerSig = state.innerSignature
+
+        let (ocrCrop, innerSig, innerUnchanged, firstReading) = await Task.detached(priority: .utility) { () -> (CGImage, [UInt8]?, Bool, Reading?) in
             let cropped = useInner ? RegionCropper.crop(frame, to: ocrRegion) : crop
-            let target = useHybridFast ? VisionReader.enhanceSmallText(cropped) : cropped
-            return (target, try? reader.readLines(target, deep: false, fast: useHybridFast))
+            var computedInner: [UInt8]? = nil
+            if useInner, area.onlyWhenVisible {
+                let sig = RegionCropper.signature(of: cropped)
+                computedInner = sig
+                // Telefonun dış köşelerindeki oyun dünyası hareket etse bile iç ekran değişmediyse OCR çalıştırma!
+                if checkInnerGate, let prev = prevInnerSig, !ReadScheduler.changed(prev, sig, threshold: 12) {
+                    return (cropped, sig, true, nil)
+                }
+            }
+            return (cropped, computedInner, false, try? reader.readLines(cropped, deep: false, fast: useHybridFast))
         }.value
         guard session == self.session else { return }
+        if let innerSig { state.innerSignature = innerSig }
+        if innerUnchanged {
+            states[area.id] = state
+            return
+        }
         guard var reading = firstReading else {
             // OCR hatası boş alan değildir. Eski kutuyu koru; aynı kareyi sonraki normal turda yeniden oku.
             // Başarısız kare, önceki adayın kararlılığını da doğrulayamaz.
             state.signature = nil
+            state.innerSignature = nil
             state.lastRead = nil
             state.candidate = nil
             states[area.id] = state
@@ -436,16 +455,17 @@ public final class RegionWatcher {
             ? Self.phoneCandidate(reading, in: ocrRegion, frame: ocrCrop, activeSubtitle: activeSourceSubtitle)
             : Self.candidate(reading, in: ocrRegion, frame: ocrCrop)
 
-        // Çift-hızlı hibrit OCR: `.fast` (~20 ms) okumasında tüm satırlar oyun paketinden veya önbellekten
-        // çözülebildiyse ağır `.accurate` OCR hiç çalışmaz (~30 ms toplam tepki). Eksik satır varsa 2× büyütülmüş
-        // görüntüde `.accurate` ile kusursuz doğruluk alınır.
+        // Çift-hızlı hibrit OCR: `.fast` (~20 ms, CoreImage yükü olmadan) okumasında tüm satırlar oyun paketinden veya
+        // önbellekten çözülebildiyse ağır `.accurate` + 2× büyütme hiç çalışmaz. Eksik satır varsa yalnız o zaman
+        // 2× büyütme + keskinleştirme + `.accurate` çalışır (~%90 daha az GPU/CPU yükü!).
         if useHybridFast {
             let prepared = candidate.paragraphs.map(IconText.protect)
             let resolved = resolveImmediate(candidate.paragraphs, prepared: prepared, senders: candidate.senders)
             let allInstant = !candidate.paragraphs.isEmpty && resolved.allSatisfy { $0 != nil }
             if !allInstant {
                 if let accurate = await Task.detached(priority: .utility, operation: {
-                    try? reader.readLines(ocrCrop, deep: false, fast: false)
+                    let enhanced = VisionReader.enhanceSmallText(ocrCrop)
+                    return try? reader.readLines(enhanced, deep: false, fast: false)
                 }).value {
                     guard session == self.session else { return }
                     reading = accurate
@@ -654,6 +674,7 @@ public final class RegionWatcher {
                     translated[index] = value
                     rememberTranslation(prepared[index].text, value)
                 }
+                savePersistentCache()
             } catch {
                 guard session == self.session else { return }
                 if states[area.id]?.shown == candidate.key {
@@ -808,7 +829,6 @@ public final class RegionWatcher {
             }
         }
         lineCache[source] = translation
-        savePersistentCache()
     }
 
     private func loadPersistentCache() {

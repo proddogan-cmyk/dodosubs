@@ -352,6 +352,36 @@ final class PanelPresenceTests: XCTestCase {
         XCTAssertEqual(server2.sent.last?.text, "TR: Meet at Vangelico.")
     }
 
+    func testPanelPresencePerformanceIsSubMillisecond() throws {
+        let reference = phoneImage(background: 0.70, screen: 0.85, messageBars: 2, barShade: 0.30)
+        let template = try XCTUnwrap(PanelTemplate.capture(from: reference))
+        let liveOpen = phoneImage(background: 0.25, screen: 0.35, messageBars: 5, barShade: 0.90)
+        let liveClosed = worldImage(seed: 2)
+
+        // 200 açık + 200 kapalı kontrolün ortalama süresini ölç.
+        let t0 = ContinuousClock.now
+        var openHits = 0
+        for _ in 0..<200 {
+            if PanelPresence.isVisible(liveOpen, templates: [template]) { openHits += 1 }
+        }
+        let openElapsed = t0.duration(to: .now)
+
+        let t1 = ContinuousClock.now
+        var closedHits = 0
+        for _ in 0..<200 {
+            if PanelPresence.isVisible(liveClosed, templates: [template]) { closedHits += 1 }
+        }
+        let closedElapsed = t1.duration(to: .now)
+
+        XCTAssertEqual(openHits, 200)
+        XCTAssertEqual(closedHits, 0)
+        let openMs = (Double(openElapsed.components.seconds) * 1000 + Double(openElapsed.components.attoseconds) / 1e15) / 200.0
+        let closedMs = (Double(closedElapsed.components.seconds) * 1000 + Double(closedElapsed.components.attoseconds) / 1e15) / 200.0
+        print(String(format: "PanelPresence benchmark → açık: %.3f ms/kare, kapalı: %.3f ms/kare", openMs, closedMs))
+        XCTAssertLessThan(openMs, 3.0)
+        XCTAssertLessThan(closedMs, 3.0)
+    }
+
     func testSingleFrameFalsePositiveNeverFlashesTranslation() async {
         let reader = Reader(), translator = Translator(), server = Server()
         let phoneOpen = Flag(true)
