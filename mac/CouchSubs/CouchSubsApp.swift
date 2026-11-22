@@ -25,12 +25,11 @@ struct CouchSubsApp: App {
                     stream.attach(model)
                 }
                 .appSurface()
-                .frame(minWidth: Theme.size("windowWidth"), idealWidth: Theme.size("windowWidth"), maxWidth: Theme.size("windowWidth") * 1.3,
-                       minHeight: Theme.size("windowHeight"), idealHeight: Theme.size("windowHeight"))
-                // Başlık çubuğu da pencere zemininin rengini alır (macOS 15 ve sonrası; öncesinde sistem rengi).
+                .frame(minWidth: 1020, idealWidth: 1200, minHeight: 700, idealHeight: 780)
                 .windowBackground(Color.csBackground)
         }
-        .windowResizability(.contentSize)
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1200, height: 780)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("DodoSubs Hakkında") { model.showAbout = true }

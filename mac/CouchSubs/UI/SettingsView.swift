@@ -166,7 +166,7 @@ private struct SettingsPage: View {
 }
 
 /// Yazı boyutu, yeri, arka planı, rengi; görünüm ayarları bilgisayar ekranındaki pencereye de uygulanır.
-private struct AppearanceCard: View {
+struct AppearanceCard: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
@@ -249,7 +249,7 @@ private struct AppearanceCard: View {
     }
 }
 
-private struct LanguageCard: View {
+struct LanguageCard: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
@@ -276,7 +276,7 @@ private struct LiveRegionPreview: View {
 }
 
 /// Altyazı bölgesi (hazır seçimler, canlı önizleme, Özel'de kaydırıcılar) ve ekranı çevirme kısayolu.
-private struct AreaCards: View {
+struct AreaCards: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
@@ -725,7 +725,7 @@ extension ExtraAreaPreset {
     }
 }
 
-private struct OBSCard: View {
+struct OBSCard: View {
     @EnvironmentObject private var model: AppModel
     @State private var obsCopied = false
 
@@ -812,7 +812,7 @@ private struct StreamWindowCard: View {
 }
 
 /// İkinci hesabın PS5 giriş şifresi (isteğe bağlı, 4 hane, Anahtarlık'ta). PS5 isterse oturum açılırken gönderilir.
-private struct LoginPasscodeCard: View {
+struct LoginPasscodeCard: View {
     @EnvironmentObject private var model: AppModel
     @State private var passcode = ""
     @State private var invalid = false
@@ -847,7 +847,7 @@ private struct LoginPasscodeCard: View {
 /// Görüntünün nereden okunduğu: CouchSubs PS5'e kendisi bağlanır (ikinci hesap) ya da oyun bu Mac'teki Sony PS Remote
 /// Play uygulamasında oynanır ve CouchSubs onun penceresini okur (bkz. `RemotePlayWindowStream`). Çeviri sürerken
 /// değiştirilirse yeni kaynakla yeniden başlar.
-private struct FrameSourceCard: View {
+struct FrameSourceCard: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
@@ -902,7 +902,7 @@ private struct FrameSourceCard: View {
 }
 
 /// Uygulamanın görünümü: koyu (varsayılan, onaylı tasarım), açık ya da sistemle aynı. Tüm pencerelere anında uygulanır.
-private struct AppThemeCard: View {
+struct AppThemeCard: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
@@ -916,7 +916,7 @@ private struct AppThemeCard: View {
     }
 }
 
-private struct AboutCard: View {
+struct AboutCard: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var confirmReset = false
@@ -942,7 +942,7 @@ private struct AboutCard: View {
 
 /// Oyun paketleri: masaüstünde ücretsiz; kurulu paketler karolar hâlinde, altta paket ve ortak havuz anahtarları
 /// (Windows'taki ayarlarla aynı düzen).
-private struct GamePacksPage: View {
+struct GamePacksPage: View {
     @EnvironmentObject private var model: AppModel
     @State private var choosingImport = false
     @State private var readingImport = false
