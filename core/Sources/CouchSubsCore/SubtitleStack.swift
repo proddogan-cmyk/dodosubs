@@ -10,10 +10,10 @@ import Foundation
 /// kendisi ilerletir. Windows'taki `SubtitleStack` ile aynı kurallar.
 public struct SubtitleStack: Equatable, Sendable {
     /// Yeni satır öncekinden bu süre içinde gelirse önceki üstte kalır.
-    public static let stackWithin: TimeInterval = 1.5
+    public static let stackWithin: TimeInterval = 3.5
     /// Üstteki satırın tam görünür kaldığı süre; sonra solmaya başlar.
-    public static let previousHold: TimeInterval = 1.5
-    public static let previousFade: TimeInterval = 0.4
+    public static let previousHold: TimeInterval = 2.2
+    public static let previousFade: TimeInterval = 0.45
     /// Yeni satırla yer değiştirmedikçe hiçbir satır bundan kısa görünmez.
     public static let minVisible: TimeInterval = 1.2
     /// "Temizle" olayı satırı okuma süresinden erken kaldırmaz; bu sürenin üst sınırı.
@@ -96,7 +96,7 @@ public struct SubtitleStack: Equatable, Sendable {
             // Üstteki satırlar olduğu gibi kalır.
         } else if stackPrevious, let shown = current, now - shown.shownAt < Self.stackWithin, !paragraphs, !shown.paragraphs,
            !Self.sameLine(shown.text, text) {
-            pushPrevious(shown.text, now: now)
+            pushPrevious(id: shown.id, text: shown.text, now: now)
         } else {
             previous = nil
             older = nil
@@ -104,7 +104,8 @@ public struct SubtitleStack: Equatable, Sendable {
         let length = Double(text.utf16.count)
         let reading = 2 + length * 0.06
         let visible = durationMs > 0 ? max(Self.minVisible, Double(durationMs) / 1000) : min(8, reading)
-        current = Current(id: nextId(), text: text, paragraphs: paragraphs, shownAt: now, hideAt: now + visible,
+        let lineId = (replaces && !paragraphs) ? (current?.id ?? nextId()) : nextId()
+        current = Current(id: lineId, text: text, paragraphs: paragraphs, shownAt: now, hideAt: now + visible,
                           holdUntil: now + min(Self.holdMax, reading))
     }
 
@@ -146,14 +147,14 @@ public struct SubtitleStack: Equatable, Sendable {
         return times.filter { $0 > now }.min()
     }
 
-    /// Önceki satır üste çıkar. Orada hâlâ tam görünen bir satır varsa o da bir üst sıraya (iki önceki) kayar.
-    private mutating func pushPrevious(_ text: String, now: TimeInterval) {
+    /// Önceki satır aynı kimlikle üste çıkar (SwiftUI animasyonla kaydırabilsin); orada hâlâ görünen satır da en üste kayar.
+    private mutating func pushPrevious(id: Int, text: String, now: TimeInterval) {
         if let shown = previous, now < shown.fadeAt, !Self.sameLine(shown.text, text) {
-            older = Slot(id: nextId(), text: shown.text, shownAt: now)
+            older = Slot(id: shown.id, text: shown.text, shownAt: now)
         } else {
             older = nil
         }
-        previous = Slot(id: nextId(), text: text, shownAt: now)
+        previous = Slot(id: id, text: text, shownAt: now)
     }
 
     /// Süresi dolan satırları atar; son satır kalktıysa üsttekiler de kalkar (TV'deki hideSubtitle gibi).

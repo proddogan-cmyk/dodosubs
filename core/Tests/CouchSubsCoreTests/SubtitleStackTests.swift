@@ -54,20 +54,30 @@ final class SubtitleStackTests: XCTestCase {
     func testSlowSpeechReplacesTheLine() {
         var stack = SubtitleStack()
         stack.show("Birinci", durationMs: 8000, now: 0)
-        stack.show("İkinci", durationMs: 8000, now: 2)
-        XCTAssertEqual(texts(stack, at: 2), ["İkinci"])
+        stack.show("İkinci", durationMs: 8000, now: 4)
+        XCTAssertEqual(texts(stack, at: 4), ["İkinci"])
     }
 
-    func testPreviousLineFadesThenGoes() {
+    func testPreviousLineFadesThenGoes() throws {
         var stack = SubtitleStack()
         stack.show("Birinci", durationMs: 8000, now: 0)
         stack.show("İkinci", durationMs: 8000, now: 1)
-        XCTAssertEqual(stack.lines(at: 2.4).first?.fading, false)
-        XCTAssertEqual(stack.lines(at: 2.6).first?.fading, true)
-        XCTAssertEqual(texts(stack, at: 2.9), ["İkinci"])
-        XCTAssertEqual(stack.nextChange(after: 1), 2.5)
-        XCTAssertEqual(stack.nextChange(after: 2.5), 2.9)
-        XCTAssertEqual(stack.nextChange(after: 2.9), 9)
+        XCTAssertEqual(stack.lines(at: 3.1).first?.fading, false)
+        XCTAssertEqual(stack.lines(at: 3.3).first?.fading, true)
+        XCTAssertEqual(texts(stack, at: 3.7), ["İkinci"])
+        XCTAssertEqual(try XCTUnwrap(stack.nextChange(after: 1)), 3.2, accuracy: 1e-6)
+        XCTAssertEqual(try XCTUnwrap(stack.nextChange(after: 3.2)), 3.65, accuracy: 1e-6)
+        XCTAssertEqual(try XCTUnwrap(stack.nextChange(after: 3.66)), 9, accuracy: 1e-6)
+    }
+
+    func testStackedLineKeepsIdentityAcrossRolesForSmoothAnimation() {
+        var stack = SubtitleStack()
+        stack.show("Birinci", durationMs: 8000, now: 0)
+        let firstId = stack.lines(at: 0).first?.id
+        stack.show("İkinci", durationMs: 8000, now: 0.8)
+        XCTAssertEqual(stack.lines(at: 0.8).first(where: { $0.role == .previous })?.id, firstId)
+        stack.show("Üçüncü", durationMs: 8000, now: 1.6)
+        XCTAssertEqual(stack.lines(at: 1.6).first(where: { $0.role == .older })?.id, firstId)
     }
 
     func testSameSentenceReadAgainDoesNotStack() {

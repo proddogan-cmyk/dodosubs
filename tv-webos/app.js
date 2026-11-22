@@ -6,7 +6,7 @@
   'use strict';
 
   // TV uygulamasının sürümü: appinfo.json, tv-tizen/config.xml ve tv-android/app/build.gradle ile aynı tutulur.
-  var APP_VERSION = '0.9.61';
+  var APP_VERSION = '0.9.62';
   var t = window.t;
   var config = window.COUCHSUBS_CONFIG || {};
   var platform = window.COUCHSUBS_PLATFORM;
@@ -26,12 +26,11 @@
   // Gösterilen satırın oyundaki İngilizce altyazının yeri (ekrana oranla), bilinmiyorsa null.
   var currentBox = null;
 
-  // Hızlı konuşma: yeni satır öncekinden bu süre içinde gelirse önceki okunamamış olabilir. Önceki çeviri yeni satırın
-  // üstünde küçük ve soluk olarak bir süre daha kalır, sonra solarak kalkar. Üç kişi art arda konuşursa iki önceki satır
-  // da en üstte daha soluk durur; ekranda en çok üç satır olur.
-  var STACK_WITHIN_MS = 1500;
-  var PREVIOUS_HOLD_MS = 1500;
-  var PREVIOUS_FADE_MS = 400;
+  // Hızlı konuşma: yeni satır öncekinden bu süre içinde gelirse önceki satır yumuşak animasyonla yukarı kayar,
+  // daha küçük ve soluk olarak bir süre daha kalır, sonra yukarı süzülerek solar. En çok üç satır üst üste sıralanır.
+  var STACK_WITHIN_MS = 3500;
+  var PREVIOUS_HOLD_MS = 2200;
+  var PREVIOUS_FADE_MS = 450;
   // Yeni satırla yer değiştirmedikçe hiçbir satır bundan kısa görünmez.
   var MIN_VISIBLE_MS = 1200;
   var shownAt = 0;
@@ -596,17 +595,97 @@
     return el.rawText !== undefined ? el.rawText : el.textContent;
   }
 
+  var motionFrames = {};
+
+  function cancelMotion(id) {
+    if (!motionFrames[id]) return;
+    if (typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(motionFrames[id]);
+    else clearTimeout(motionFrames[id]);
+    delete motionFrames[id];
+  }
+
+  function resetMotion(el) {
+    if (!el || !el.style) return;
+    el.style.webkitTransition = '';
+    el.style.transition = '';
+    el.style.webkitTransform = '';
+    el.style.transform = '';
+    el.style.opacity = '';
+  }
+
+  function measureTop(id) {
+    var el = $(id);
+    if (!el || typeof el.getBoundingClientRect !== 'function') return null;
+    var r = el.getBoundingClientRect();
+    return (r && r.height > 0) ? r.top : null;
+  }
+
+  // GPU hızlandırmalı FLIP / kayma animasyonu: yalnızca transform ve opacity kullanır (LG webOS 60 fps).
+  function glideElement(id, fromY, fromScale, fromOpacity, durationMs) {
+    var el = $(id);
+    if (!el || !el.style) return;
+    cancelMotion(id);
+    if (typeof window.requestAnimationFrame !== 'function') {
+      resetMotion(el);
+      return;
+    }
+    var startTransform = 'translate3d(0,' + Math.round(fromY) + 'px,0) scale(' + fromScale + ')';
+    el.style.webkitTransition = 'none';
+    el.style.transition = 'none';
+    el.style.webkitTransform = startTransform;
+    el.style.transform = startTransform;
+    if (fromOpacity !== null) el.style.opacity = String(fromOpacity);
+    // Başlangıç konumunu tarayıcıya tek reflow ile kilitle.
+    void el.offsetWidth;
+    motionFrames[id] = window.requestAnimationFrame(function () {
+      delete motionFrames[id];
+      var ease = 'cubic-bezier(0.22, 1, 0.36, 1)';
+      var tr = '-webkit-transform ' + durationMs + 'ms ' + ease +
+        ', transform ' + durationMs + 'ms ' + ease +
+        ', opacity ' + Math.round(durationMs * 0.85) + 'ms ease-out';
+      el.style.webkitTransition = tr;
+      el.style.transition = tr;
+      el.style.webkitTransform = 'translate3d(0,0,0) scale(1)';
+      el.style.transform = 'translate3d(0,0,0) scale(1)';
+      if (fromOpacity !== null) el.style.opacity = '1';
+    });
+  }
+
   // paragraphs: görev paneli gibi başlık ve maddeli yazılar satır satır, sola yaslı gösterilir.
   // replaces: bilgisayar bu satırı öncekinin uzamış ya da düzelmiş okuması saydı (bkz. replacesCurrent).
   function showSubtitle(text, duration, box, paragraphs, replaces) {
     var now = Date.now();
+    var wasVisible = $('subtitle').className !== 'hidden';
     var current = rawText('subtitle-text');
+    var isReplace = replacesCurrent(replaces, paragraphs);
+    var isSameVisible = wasVisible && current && sameLine(current, text);
+    var willStack = !isReplace && stackPrevious && wasVisible && current && now - shownAt < STACK_WITHIN_MS &&
+      !paragraphs && !shownParagraphs && !isSameVisible;
+    var prevTextBefore = rawText('subtitle-prev-text');
+    var willPromotePrev2 = willStack && $('subtitle-prev').className === '' && !!prevTextBefore &&
+      !sameLine(prevTextBefore, current);
+
+    // FLIP "First": DOM değişmeden önce ekrandaki gerçek dikey konumları ölç.
+    var oldCurrentTop = willStack ? measureTop('subtitle-text') : null;
+    var oldPrevTop = willPromotePrev2 ? measureTop('subtitle-prev-text') : null;
+
+    // Ölçümleri ve placeCover'ı temiz yapmak için önceki animasyon dönüşümlerini sıfırla.
+    cancelMotion('subtitle-text');
+    resetMotion($('subtitle-text'));
+    if (willStack) {
+      cancelMotion('subtitle-prev-text');
+      resetMotion($('subtitle-prev-text'));
+      if (willPromotePrev2) {
+        cancelMotion('subtitle-prev2-text');
+        resetMotion($('subtitle-prev2-text'));
+      }
+    }
+
     // Önceki satır kısa göründüyse yeni satırın üstünde kalır. Aynı cümlenin başka bir okunuşu (ya da yeniden gelen
     // satır) ikinci çeviri gibi durmasın diye üste çıkmaz; görev paneli gibi çok satırlı yazılar da üst üste binmez.
-    if (replacesCurrent(replaces, paragraphs)) {
+    if (isReplace) {
       // Üstteki daha eski satırlar olduğu gibi kalır.
-    } else if (stackPrevious && $('subtitle').className !== 'hidden' && current && now - shownAt < STACK_WITHIN_MS &&
-        !paragraphs && !shownParagraphs && !sameLine(current, text)) {
+    } else if (willStack) {
       showPrevious(current);
     } else {
       hidePrevious();
@@ -621,6 +700,27 @@
     layout();
     setStatus('st-last', text.length > 40 ? text.slice(0, 40) + '…' : text);
     notePlace();
+
+    // FLIP "Last / Invert / Play": eski satırlar tam eski konumlarından yukarı kayarak yerlerine oturur,
+    // yeni satır ise alttan yumuşakça yükselerek belirir.
+    if (willStack) {
+      var newPrevTop = measureTop('subtitle-prev-text');
+      var dyPrev = (oldCurrentTop !== null && newPrevTop !== null)
+        ? Math.max(18, Math.min(220, oldCurrentTop - newPrevTop))
+        : 54;
+      glideElement('subtitle-prev-text', dyPrev, bandShape ? 1 : 1.22, null, 360);
+      if (willPromotePrev2) {
+        var newPrev2Top = measureTop('subtitle-prev2-text');
+        var dyPrev2 = (oldPrevTop !== null && newPrev2Top !== null)
+          ? Math.max(14, Math.min(180, oldPrevTop - newPrev2Top))
+          : 44;
+        glideElement('subtitle-prev2-text', dyPrev2, bandShape ? 1 : 1.08, null, 360);
+      }
+    }
+    if (!isReplace && !isSameVisible) {
+      glideElement('subtitle-text', willStack ? 22 : 12, bandShape ? 1 : (willStack ? 0.97 : 0.985), 0, willStack ? 280 : 220);
+    }
+
     clearTimeout(hideTimer);
     // Geçersiz ya da çok kısa süre yazıyı gösterir göstermez kaldırmasın.
     var ms = duration > 0 ? Math.max(MIN_VISIBLE_MS, duration) : Math.min(8000, 2000 + text.length * 60);
@@ -644,6 +744,8 @@
       diag.lastHide = (reason || '?') + ' ' + (Date.now() - shownAt) + 'ms';
       renderDiag();
     }
+    cancelMotion('subtitle-text');
+    resetMotion($('subtitle-text'));
     $('subtitle').className = 'hidden';
     $('subtitle-cover').className = 'hidden';
     hidePrevious();
@@ -681,7 +783,8 @@
     var timers = previousTimers[id];
     clearTimeout(timers[0]);
     clearTimeout(timers[1]);
-    setLineText(id + '-text', text, false, Math.round(fontBase * 0.8));
+    var ratio = id === 'subtitle-prev2' ? 0.74 : 0.8;
+    setLineText(id + '-text', text, false, Math.round(fontBase * ratio));
     $(id).className = '';
     timers[0] = setTimeout(function () {
       $(id).className = 'fading';
@@ -693,6 +796,8 @@
     var timers = previousTimers[id];
     clearTimeout(timers[0]);
     clearTimeout(timers[1]);
+    cancelMotion(id + '-text');
+    resetMotion($(id + '-text'));
     $(id).className = 'hidden';
   }
 
@@ -1193,7 +1298,7 @@
       fontBase = style.fontSize;
       $('subtitle-text').style.fontSize = style.fontSize + 'px';
       $('subtitle-prev-text').style.fontSize = Math.round(style.fontSize * 0.8) + 'px';
-      $('subtitle-prev2-text').style.fontSize = Math.round(style.fontSize * 0.8) + 'px';
+      $('subtitle-prev2-text').style.fontSize = Math.round(style.fontSize * 0.74) + 'px';
     }
     if (PLACEMENTS[style.placement]) placement = style.placement;
     bandShape = style.backgroundShape === 'band';

@@ -306,19 +306,24 @@ html, body {
   50% { opacity: 1; }
 }
 
-/* Hızlı konuşmada önceki satır kısa süre yeni satırın üstünde, daha küçük ve soluk durur; sonra solarak kalkar.
-   Aradaki boşluk iki kutunun üst üste binmiş gibi görünmesini önler. Solma yalnız bu satırdadır; #subtitle'ın
-   kendi katmanı ve görünürlüğü değişmez. */
+/* Hızlı konuşmada önceki satır yumuşakça yukarı kayarak yeni satırın üstünde küçülüp soluklaşır; süresi dolunca
+   yukarı doğru süzülerek kaybolur. Yalnızca transform ve opacity animasyonlanır (LG webOS 60 fps GPU katmanı). */
 #subtitle-prev, #subtitle-prev2 {
   margin-bottom: 14px;
-  opacity: 0.75;
-  -webkit-transition: opacity 0.4s linear;
-  transition: opacity 0.4s linear;
+  opacity: 0.78;
+  -webkit-transform: translate3d(0, 0, 0) scale(1);
+  transform: translate3d(0, 0, 0) scale(1);
+  -webkit-transition: opacity 450ms cubic-bezier(0.4, 0, 0.2, 1), -webkit-transform 450ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition: opacity 450ms cubic-bezier(0.4, 0, 0.2, 1), transform 450ms cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: transform, opacity;
 }
-/* İki önceki satır en üstte, daha da soluk durur (ekranda en çok üç satır). Açık sahnede de okunsun diye %60'ın
-   altına inmez. */
-#subtitle-prev2 { opacity: 0.6; }
-#subtitle-prev.fading, #subtitle-prev2.fading { opacity: 0; }
+/* İki önceki satır en üstte, daha küçük ve daha soluk durur (ekranda en çok üç satır). */
+#subtitle-prev2 { opacity: 0.56; }
+#subtitle-prev.fading, #subtitle-prev2.fading {
+  opacity: 0;
+  -webkit-transform: translate3d(0, -18px, 0) scale(0.95);
+  transform: translate3d(0, -18px, 0) scale(0.95);
+}
 #subtitle-prev.hidden, #subtitle-prev2.hidden { display: none; }
 
 #subtitle-prev-text, #subtitle-prev2-text {
@@ -326,6 +331,7 @@ html, body {
   padding: 0.24em 0.5em;
   border-radius: 0.33em;
   background: rgba(12, 14, 18, 0.75);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.30);
   max-width: 100%;
   box-sizing: border-box;
   word-wrap: break-word;
@@ -334,7 +340,11 @@ html, body {
   line-height: 1.25;
   font-weight: 400;
   text-shadow: 0 2px 4px #000;
+  -webkit-transform-origin: center bottom;
+  transform-origin: center bottom;
+  will-change: transform, opacity;
 }
+#subtitle-prev2-text { font-size: 34px; }
 
 /* Zemin mavimsi siyah ve neredeyse opaktır; oyunun parlak sahneleri kutudan sızmaz. İç boşluk ve köşe em cinsindendir:
    yazı boyu (ve uzun cümlede otomatik küçülme) değişse de kutu/yazı oranı aynı kalır. Zemin saydamlaşınca yazıya
@@ -345,6 +355,7 @@ html, body {
   padding: 0.24em 0.5em;
   border-radius: 0.33em;
   background: rgba(12, 14, 18, 0.9);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.10);
   max-width: 100%;
   box-sizing: border-box;
   word-wrap: break-word;
@@ -353,12 +364,16 @@ html, body {
   line-height: 1.25;
   font-weight: 400;
   text-shadow: 0 2px 4px #000;
+  -webkit-transform-origin: center bottom;
+  transform-origin: center bottom;
+  will-change: transform, opacity;
 }
 
 /* Zemin %50'den saydamsa (app.js applyStyle) yazının çevresine 1 px'lik sert siyah kontur eklenir: tek yumuşak gölge
    açık sahnede (kar, gökyüzü) beyaz yazıyı seçtirmiyor. */
 body.thin-bg #subtitle-text, body.thin-bg #subtitle-prev-text, body.thin-bg #subtitle-prev2-text {
   text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 4px #000, 0 2px 4px #000;
+  box-shadow: none;
 }
 
 
@@ -369,6 +384,7 @@ body.band #subtitle-text, body.band #subtitle-prev-text, body.band #subtitle-pre
   display: block;
   box-sizing: border-box;
   border-radius: 0;
+  box-shadow: none;
 }
 /* Bantta örtü de ekranın iki kenarına uzanır; köşeleri yuvarlak kalınca ekran kenarında köşelerden oyun görünüyordu. */
 body.band #subtitle-cover { border-radius: 0; }

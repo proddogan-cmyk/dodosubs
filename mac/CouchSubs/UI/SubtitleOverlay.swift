@@ -209,6 +209,7 @@ struct SubtitleOverlayView: View {
                 }
                 ForEach(lines) { line($0) }
             }
+            .animation(.spring(response: 0.34, dampingFraction: 0.86), value: lines)
             .padding(.horizontal, model.settings.style.backgroundShape == .band ? 0 : 24 * scale)
             .padding(.bottom, 8 * scale)
         }
@@ -267,12 +268,17 @@ struct SubtitleOverlayView: View {
         let current = line.role == .current
         // Uzun çeviri en çok 3 satıra dengeli bölünür; 3 satıra sığmazsa yazı biraz küçülür (bkz. SubtitleWrap).
         let wrapped = line.wrapped
-        let size = CGFloat(style.fontSize) * scale * (current ? 1 : 0.8) * CGFloat(wrapped.scale)
+        let roleScale: CGFloat = switch line.role {
+        case .current: 1
+        case .previous: 0.80
+        case .older: 0.74
+        }
+        let size = CGFloat(style.fontSize) * scale * roleScale * CGFloat(wrapped.scale)
         let alpha = Double(max(0, min(100, style.background))) / 100 * (current ? 1 : 0.83)
         let opacity: Double = switch line.role {
         case .current: 1
-        case .previous: 0.6
-        case .older: 0.45
+        case .previous: 0.78
+        case .older: 0.56
         }
         // Derleyici uzun zincirde tür çıkarımında takılmasın diye değerler önce hesaplanır (CI'daki Xcode).
         let weight: Font.Weight = style.bold ? .bold : .semibold
@@ -297,7 +303,13 @@ struct SubtitleOverlayView: View {
             .frame(maxWidth: band ? .infinity : nil)
             .background(Color.black.opacity(alpha), in: RoundedRectangle(cornerRadius: corner))
             .opacity(shown)
-            .animation(.linear(duration: SubtitleStack.previousFade), value: line.fading)
+            .offset(y: line.fading ? -14 * scale : 0)
+            .scaleEffect(line.fading ? 0.96 : 1, anchor: .bottom)
+            .animation(.easeOut(duration: SubtitleStack.previousFade), value: line.fading)
+            .transition(.asymmetric(
+                insertion: .move(edge: .bottom).combined(with: .opacity),
+                removal: .move(edge: .top).combined(with: .opacity)
+            ))
             .contentShape(Rectangle())
             .gesture(moveGesture)
     }
