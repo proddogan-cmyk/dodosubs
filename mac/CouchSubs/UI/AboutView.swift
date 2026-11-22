@@ -37,7 +37,9 @@ struct AboutView: View {
             .frame(maxWidth: .infinity)
             .tile(padding: Theme.space("m"))
             HStack(spacing: Theme.space("m")) {
-                Link("Source code", destination: AppIdentity.sourceURL)
+                Link("DodoSubs GitHub", destination: URL(string: "https://github.com/proddogan-cmyk/dodosubs")!)
+                Text(verbatim: "·").foregroundStyle(Color.csSecondary)
+                Link("CouchSubs", destination: AppIdentity.sourceURL)
                 Text(verbatim: "·").foregroundStyle(Color.csSecondary)
                 Link(destination: URL(string: "https://github.com/chiaki-ng/chiaki-ng")!) { Text(verbatim: "chiaki-ng") }
             }
