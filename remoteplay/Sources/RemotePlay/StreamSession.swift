@@ -55,16 +55,21 @@ struct ReconnectPolicy {
     }
 }
 
-/// Bağlantı sık kopuyorsa görüntü 720p'ye düşürülür (Windows ve Android'deki QualityFallback ile aynı kural).
+/// Bağlantı sık kopuyorsa ya da Wi-Fi üzerinde yoğun FEC paket kaybı oluyorsa görüntü 720p/6 Mbps OCR profiline
+/// düşürülür (Windows ve Android'deki QualityFallback kuralının FEC-duyarlı geliştirilmiş hâli).
 ///
-/// 1080p akış ~15 Mbit/sn, 720p ~10 Mbit/sn ister. Kablosuz ağda PS5 akışı birkaç dakikada bir kopuyor ya da görüntü
-/// takılıyordu (GitHub #388, #401); altyazı okumak için 720p yeterlidir. `window` içinde `dropsToLower` kopma olursa bu
-/// çeviri boyunca 720p kullanılır.
+/// 1080p akış yüksek bit hızı ister. Kablosuz ağda PS5 akışı birkaç dakikada bir kopuyor ya da saniyede bir FEC
+/// hatasıyla 250–350 ms donuyordu; altyazı okumak için 720p/30fps @ 6 Mbit/sn fazlasıyla keskindir ve paket kaybını
+/// kökten azaltır.
 struct QualityFallback {
     static let window: TimeInterval = 10 * 60
     static let dropsToLower = 2
+    /// Bu süre içinde `fecBurstsToLower` veya daha fazla FEC hatası gelirse akış 720p düşük bit hızına çekilir.
+    static let fecWindow: TimeInterval = 20
+    static let fecBurstsToLower = 6
     private var drops: [Date] = []
-    /// Görüntü 720p'ye düşürüldü mü.
+    private var fecEvents: [Date] = []
+    /// Görüntü 720p düşük bit hızına düşürüldü mü.
     private(set) var lowered = false
 
     /// Akış sürerken bağlantı koptu ya da görüntü takıldı. Bu kopmayla 720p'ye geçildiyse true.
@@ -74,6 +79,17 @@ struct QualityFallback {
         drops.removeAll { now.timeIntervalSince($0) > Self.window }
         guard drops.count >= Self.dropsToLower else { return false }
         lowered = true
+        return true
+    }
+
+    /// Akış sırasında libchiaki FEC hatası bildirdi. Yoğun FEC patlaması eşiği aşılıp 720p'ye geçildiyse true.
+    mutating func fecFailed(at now: Date = Date()) -> Bool {
+        guard !lowered else { return false }
+        fecEvents.append(now)
+        fecEvents.removeAll { now.timeIntervalSince($0) > Self.fecWindow }
+        guard fecEvents.count >= Self.fecBurstsToLower else { return false }
+        lowered = true
+        fecEvents.removeAll()
         return true
     }
 
@@ -299,10 +315,15 @@ final class ChiakiSessionBox {
         self.generation = generation
         self.owner = owner
         logger.onMessage = { [weak self] text, _ in
-            guard let self, let found = DisconnectReason.sessionRequestHint(fromLog: text) else { return }
-            self.hintLock.lock()
-            self.hint = found
-            self.hintLock.unlock()
+            guard let self else { return }
+            if text.contains("FEC failed") || text.contains("Video FEC failure") {
+                self.owner?.noteFECFailure(generation: self.generation)
+            }
+            if let found = DisconnectReason.sessionRequestHint(fromLog: text) {
+                self.hintLock.lock()
+                self.hint = found
+                self.hintLock.unlock()
+            }
         }
     }
 
@@ -322,6 +343,8 @@ final class ChiakiSessionBox {
         chiaki_connect_video_profile_preset(&info.video_profile,
                                             lowQuality ? CHIAKI_VIDEO_RESOLUTION_PRESET_720p : CHIAKI_VIDEO_RESOLUTION_PRESET_1080p,
                                             CHIAKI_VIDEO_FPS_PRESET_30)
+        // OCR için 30 fps'te 10 Mbit (1080p) / 6 Mbit (720p) keskin metin verirken Wi-Fi FEC kaybını büyük ölçüde azaltır.
+        info.video_profile.bitrate = lowQuality ? 6000 : 10000
         info.video_profile.codec = CHIAKI_CODEC_H264
         info.video_profile_auto_downgrade = true
         info.enable_keyboard = false
@@ -668,6 +691,21 @@ public final class StreamSession: @unchecked Sendable {
         guard quality.dropped() else { return }
         RemotePlayLog.write("PS5 bağlantısı \(Int(QualityFallback.window / 60)) dk içinde \(QualityFallback.dropsToLower) kez koptu; "
             + "görüntü 720p'ye düşürülüyor (daha az bant genişliği). Kalıcı çözüm: PS5'i modeme kabloyla bağlayın")
+    }
+
+    /// libchiaki iş parçacığından çağrılır: yoğun FEC paket kaybı varsa 1080p'den 720p/6 Mbps OCR profiline iner.
+    fileprivate func noteFECFailure(generation eventGeneration: Int) {
+        queue.async { [weak self] in
+            guard let self, self.box?.generation == eventGeneration, self.streaming else { return }
+            guard self.quality.fecFailed() else { return }
+            RemotePlayLog.write("PS5 akışında \(Int(QualityFallback.fecWindow)) sn içinde \(QualityFallback.fecBurstsToLower) FEC hatası görüldü; "
+                + "akıcı OCR için 720p/6 Mbps profiline geçiliyor")
+            let next = self.bump(running: true)
+            self.closeBox()
+            self.policy.reset()
+            self.watch { $0.reset() }
+            self.connect(next)
+        }
     }
 
     private func scheduleReconnect(_ current: Int, reason: DisconnectReason, initialized: Bool = true, box failed: ChiakiSessionBox? = nil) {

@@ -22,6 +22,8 @@ public final class TranslationCache: @unchecked Sendable {
     public let engine: String?
     private let lock = NSLock()
     private var entries: [String: (value: String, used: Int)] = [:]
+    /// Noktalama/büyük-küçük harf farkı olan OCR tekrarlarında (≥8 harf) 0 ms önbellek isabeti için ikincil dizin.
+    private var normalizedIndex: [String: String] = [:]
     private var tick = 0
     private var loaded = false
     /// Dosyadaki satır sayısı (yinelenenler ve atılanlar dahil).
@@ -72,11 +74,21 @@ public final class TranslationCache: @unchecked Sendable {
     public func value(for key: String) -> String? {
         lock.withLock {
             loadIfNeeded()
-            guard let entry = entries[key] else { return nil }
-            tick += 1
-            entries[key] = (entry.value, tick)
-            TranslationProbe.current?.noteHit()
-            return entry.value
+            if let entry = entries[key] {
+                tick += 1
+                entries[key] = (entry.value, tick)
+                TranslationProbe.current?.noteHit()
+                return entry.value
+            }
+            if let normKey = Self.normalizedKey(for: key),
+               let canonical = normalizedIndex[normKey],
+               let entry = entries[canonical] {
+                tick += 1
+                entries[canonical] = (entry.value, tick)
+                TranslationProbe.current?.noteHit()
+                return entry.value
+            }
+            return nil
         }
     }
 
@@ -91,10 +103,27 @@ public final class TranslationCache: @unchecked Sendable {
             }
             tick += 1
             entries[key] = (value, tick)
+            if let normKey = Self.normalizedKey(for: key) { normalizedIndex[normKey] = key }
             evictIfNeeded()
             append(key, value)
             TranslationProbe.current?.noteFresh(engine: engine)
         }
+    }
+
+    /// Oyun/ek-talimat önekini (`\u{001f}` ile ayrılmış) koruyarak metin kısmını sadeleştirir; ≥8 harften kısaysa nil.
+    private static func normalizedKey(for key: String) -> String? {
+        let prefix: String
+        let text: String
+        if let sep = key.lastIndex(of: "\u{001f}") {
+            prefix = String(key[...sep])
+            text = String(key[key.index(after: sep)...])
+        } else {
+            prefix = ""
+            text = key
+        }
+        let norm = TextMatch.normalize(text)
+        guard norm.count >= 8 else { return nil }
+        return prefix + norm
     }
 
     /// Dosyayı ilk kullanımda okur (çeviri ana iş parçacığının dışında olduğu için arayüzü bekletmez).
@@ -108,6 +137,7 @@ public final class TranslationCache: @unchecked Sendable {
                   !pair[0].isEmpty, !pair[1].isEmpty else { continue }
             tick += 1
             entries[pair[0]] = (pair[1], tick)
+            if let normKey = Self.normalizedKey(for: pair[0]) { normalizedIndex[normKey] = pair[0] }
         }
         evictIfNeeded()
         if fileLines > entries.count + limit / 2 { rewrite() }
@@ -118,7 +148,12 @@ public final class TranslationCache: @unchecked Sendable {
         // Her seferinde tek kayıt atmak yerine onda biri atılır; sıralama seyrek yapılır.
         let drop = entries.count - limit + limit / 10
         let oldest = entries.sorted { $0.value.used < $1.value.used }.prefix(drop)
-        for (key, _) in oldest { entries[key] = nil }
+        for (key, _) in oldest {
+            entries[key] = nil
+            if let normKey = Self.normalizedKey(for: key), normalizedIndex[normKey] == key {
+                normalizedIndex[normKey] = nil
+            }
+        }
     }
 
     private func append(_ key: String, _ value: String) {

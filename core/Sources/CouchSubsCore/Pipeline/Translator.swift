@@ -16,6 +16,9 @@ public protocol TextTranslator {
     /// Hat satır başındaki konuşan adını ("PRICE: …") ayırıp çevirmene yalnız cümleyi verir; ad buradan öğrenilir ve
     /// sonraki cümlelerin içinde geçince çeviriden korunur (#287).
     func noteSpeaker(_ name: String)
+    /// Oyun paketinden gelen satır ve Türkçesini sahne bağlamına ekler; bir sonraki cümle yapay zekâya giderse
+    /// model önceki replikleri, hitap tonunu (sen/siz) ve karakter adlarını eksiksiz bilir.
+    func recordContext(source: String, translation: String)
 }
 
 extension TextTranslator {
@@ -33,6 +36,8 @@ extension TextTranslator {
     public var translatesTogether: Bool { false }
 
     public func noteSpeaker(_ name: String) {}
+
+    public func recordContext(source: String, translation: String) {}
 }
 
 public enum TranslatorError: Error, Equatable {

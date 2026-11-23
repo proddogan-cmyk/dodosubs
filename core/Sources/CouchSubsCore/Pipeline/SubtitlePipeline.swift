@@ -43,8 +43,8 @@ public final class SubtitlePipeline {
         var read: ReadInfo
     }
     private var held: Held?
-    /// Son çevrilen (motora ya da pakete giden) okuma, puanı ve zamanı.
-    private var lastSent: (source: String, score: Int, at: Int)?
+    /// Son çevrilen (motora ya da pakete giden) okuma, puanı, konumu ve zamanı.
+    private var lastSent: (source: String, score: Int, box: TextBox?, at: Int)?
     private var lastClearAt = Int.min
     /// Yarım ya da bozuk okuma kısa süre bekletilip aynı satırın en iyi okuması mı çevrilsin (Windows'ta yazım denetimiyle
     /// açık). Mac ve iPhone'da açık (Windows ve Android ile aynı); kapalıyken her kararlı okuma hemen çevrilir.
@@ -148,6 +148,9 @@ public final class SubtitlePipeline {
     public var skipsTurkish = true
     /// Yalnız GTA 6 altyazı renginin üstündeki OCR satırlarını oku.
     public var watchSubtitleBackground = false
+    /// Şu an ekranda açık olan ek panel/telefon bölgeleri (ekran koordinatları, 0–1): bu kutuların içine düşen OCR
+    /// satırları ana altyazı bloğundan çıkarılır (telefon mesajlarının ana altyazıya sızmasını kesin olarak engeller).
+    public var excludedScreenBoxes: [TextBox] = []
     /// Hiçbir pakette bulunmayan kararlı satır (ortak havuz için).
     public var onPackMiss: ((String) -> Void)?
     /// Son gösterilen çevirinin nereden geldiği: "paket" ya da "motor" (günlük ve sayım için).
@@ -229,8 +232,9 @@ public final class SubtitlePipeline {
         // Yazı tanımanın uydurduğu sözcük çöpleri ("ou$3e") de çevirmene gitmez.
         // Alandaki menü ve köşe göstergeleri de altyazı değildir; yalnız altyazı bloğu çevrilir ve kutusu ona göre olur.
         let place = TextBox(left: region.left, top: region.top, right: region.right, bottom: region.bottom)
+        let unmasked = Self.excluding(excludedScreenBoxes, from: lastReading, in: place)
         // Konuşma değişirken sabit duran görev/HUD satırı ("Get in the sea plane", GTA 6) altyazı bloğuna katılmaz.
-        let rows = stickyRows.filter(lastReading.withoutButtonPrompts().withoutOcrNoise().joiningRows(), at: now())
+        let rows = stickyRows.filter(unmasked.withoutButtonPrompts().withoutOcrNoise().joiningRows(), at: now())
         for row in stickyRows.newlySticky { log("sabit satır: \(SubtitleLog.excerpt(row)) görev/HUD yazısı sayıldı, çevrilmiyor") }
         let reading = rows.subtitleBlock(in: place)
         currentRead = ReadInfo(capturedAt: captured, ocrMs: lastReadMs, confidence: reading.confidence)
@@ -392,8 +396,18 @@ public final class SubtitlePipeline {
         // Az önce çevrilen satırın daha iyi olmayan yeniden okuması yeni satır değildir (TV'de üst üste binmesin).
         if let last = lastSent, (!packed || (last.at > lastClearAt && isPackedFragment(source, of: last.source))),
            time - last.at < Self.rereadWithinMs, Rereads.allLinesCovered(source, by: last.source), Rereads.score(source) <= last.score {
-            lastSent = (last.source, last.score, time)
+            lastSent = (last.source, last.score, last.box, time)
             log("yeniden-okuma: \(SubtitleLog.excerpt(source)) az önce çevrilenden iyi değil, yok sayıldı")
+            return
+        }
+        // Bozuk OCR yeniden okuması ("somewhere... tuck him" → 0.7 sn sonra "surmnewnere... Tuck him"):
+        // ekran temizlenmediyse, yeni okuma pakette yoksa ve daha bozuksa boşa LLM'e gitmesin.
+        if let last = lastSent, !packed, last.at > lastClearAt,
+           time - last.at < Self.rereadWithinMs,
+           Self.isGarbledReread(source, of: last.source, candidateScore: Rereads.score(source), previousScore: last.score,
+                                candidateBox: box, previousBox: last.box) {
+            lastSent = (last.source, last.score, last.box, time)
+            log("bozuk yeniden-okuma: \(SubtitleLog.excerpt(source)) önceki temiz satırın bozuk okuması sayıldı, yok sayıldı")
             return
         }
         lineLeft()
@@ -402,6 +416,41 @@ public final class SubtitlePipeline {
         guard wait > 0 else { return enqueue(source, box: box) }
         held = Held(source: source, box: box, since: time, wait: wait, score: Rereads.score(source), read: currentRead)
         log("bekletiliyor (en çok \(wait) ms): \(SubtitleLog.excerpt(source))")
+    }
+
+    /// Aynı ekranda temiz/paketten gelen satırın hemen ardından gelen daha bozuk OCR okumasını yakalar
+    /// (ör. "somewhere... tuck him" → "surmnewnere... Tuck him").
+    static func isGarbledReread(_ candidate: String, of previous: String, candidateScore: Int, previousScore: Int,
+                                candidateBox: TextBox?, previousBox: TextBox?) -> Bool {
+        guard Rereads.looksMisread(candidate), candidateScore < previousScore else { return false }
+        let a = TextMatch.normalize(candidate), b = TextMatch.normalize(previous)
+        guard a.count >= 6, b.count >= 6 else { return false }
+        let lenRatio = Double(min(a.count, b.count)) / Double(max(a.count, b.count))
+        guard lenRatio >= 0.55 else { return false }
+        let overlap = boxesOverlap(candidateBox, previousBox)
+        return TextMatch.isSimilar(a, b, threshold: overlap ? 0.50 : 0.62)
+    }
+
+    private static func boxesOverlap(_ a: TextBox?, _ b: TextBox?) -> Bool {
+        guard let a, let b else { return false }
+        let iw = min(a.right, b.right) - max(a.left, b.left)
+        let ih = min(a.bottom, b.bottom) - max(a.top, b.top)
+        return iw > 0 && ih > 0
+    }
+
+    /// Aktif telefon/panel kutularının içine düşen OCR satırlarını ana altyazı okumasından ayıklar.
+    static func excluding(_ boxes: [TextBox], from reading: Reading, in place: TextBox) -> Reading {
+        guard !boxes.isEmpty, !reading.lines.isEmpty else { return reading }
+        let kept = reading.lines.filter { line in
+            guard let local = line.box else { return true }
+            let screen = local.placed(in: place)
+            let cx = (screen.left + screen.right) * 0.5
+            let cy = (screen.top + screen.bottom) * 0.5
+            return !boxes.contains { box in
+                cx >= box.left && cx <= box.right && cy >= box.top && cy <= box.bottom
+            }
+        }
+        return kept.count == reading.lines.count ? reading : Reading(lines: kept)
     }
 
     // Paket eşleşmesi tek başına eksik parçayı yeni replik yapmaz. Tam kısa cümleler korunur.
@@ -422,7 +471,7 @@ public final class SubtitlePipeline {
         lastRequested += 1
         let request = Request(number: lastRequested, source: source, box: box, session: session, read: read ?? currentRead)
         lineOnScreen = request.number
-        lastSent = (source, Rereads.score(source), now())
+        lastSent = (source, Rereads.score(source), box, now())
         if let packed = packMatch(request) {
             showPacked(request, packed)
             return
@@ -430,6 +479,11 @@ public final class SubtitlePipeline {
         if skipsTurkish, TurkishText.isSure(source) {
             remember(request.number, source, nil)
             log(request, "\(SubtitleLog.excerpt(source)) → zaten Türkçe, çevrilmedi")
+            return
+        }
+        if SystemOverlayFilter.isSystemOverlay(source) {
+            remember(request.number, source, nil)
+            log(request, "\(SubtitleLog.excerpt(source)) → konsol sistem menüsü, çevrilmedi")
             return
         }
         // Hiç harfi olmayan okuma (hız göstergesi "20 40 60 80", plaka, sayaç "1 / 3") çevrilecek yazı değildir;
@@ -477,7 +531,7 @@ public final class SubtitlePipeline {
         lineLeft()
         full.leftAt = nil
         lineOnScreen = full.number
-        lastSent = (source, Rereads.score(source), now())
+        lastSent = (source, Rereads.score(source), full.box, now())
         return true
     }
 
@@ -522,6 +576,8 @@ public final class SubtitlePipeline {
         let metrics = measure(request, translation: nil, origin: .pack)
         log(request, "\(SubtitleLog.excerpt(source)) → \(pack)")
         lastShown = request.number
+        if let prefix = request.prefix { translator.noteSpeaker(prefix.name) }
+        translator.recordContext(source: source, translation: translated)
         server.sendSubtitle(translated, durationMs: 15000, box: request.box, replaces: revisesShown(source))
         lastPair = (source, translated)
         lastBox = request.box

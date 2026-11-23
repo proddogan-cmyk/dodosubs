@@ -6,7 +6,7 @@
   'use strict';
 
   // TV uygulamasının sürümü: appinfo.json, tv-tizen/config.xml ve tv-android/app/build.gradle ile aynı tutulur.
-  var APP_VERSION = '0.9.66';
+  var APP_VERSION = '0.9.67';
   var t = window.t;
   var config = window.COUCHSUBS_CONFIG || {};
   var platform = window.COUCHSUBS_PLATFORM;
@@ -585,6 +585,7 @@
   }
 
   var RICH_MARKER_RE = /[\[\(\*♪♫]/;
+  var SPEAKER_LINE_RE = /^([A-ZÇĞİÖŞÜa-zçğıöşü0-9][A-ZÇĞİÖŞÜa-zçğıöşü0-9 .'\-]{0,22}:)(\s+)/;
   var VOICE_TAG_RE = /(radyo|telsiz|radio|intercom|hoparlör|telefon|phone|fısıld|whisper|mırıldan|dış ses|anons|pa\b|tv\b|kayıt)/i;
 
   function canRenderRichDom() {
@@ -596,10 +597,11 @@
     }
   }
 
-  // [Radyo], (Fısıldayarak), *Siren sesi*, ♪ şarkı sözü ♪ kalıplarını sinema standardı italik/gümüş/altın
+  // Konuşmacı adı ("LUCIA: …"), [Radyo], (Fısıldayarak), *Siren sesi* ve ♪ şarkı sözü ♪ kalıplarını sinema standardı
   // biçimde DOM düğümleriyle işler (innerHTML kullanmaz, düz metinde sıfır ek maliyet).
   function renderRichSubtitle(el, text) {
-    if (!RICH_MARKER_RE.test(text) || !canRenderRichDom()) {
+    var hasSpeaker = SPEAKER_LINE_RE.test(text) || text.indexOf('\n') !== -1 && /(?:^|\n)[A-ZÇĞİÖŞÜa-zçğıöşü0-9][A-ZÇĞİÖŞÜa-zçğıöşü0-9 .'\-]{0,22}:\s+/.test(text);
+    if ((!RICH_MARKER_RE.test(text) && !hasSpeaker) || !canRenderRichDom()) {
       el.textContent = text;
       return;
     }
@@ -615,6 +617,15 @@
         music.textContent = line;
         el.appendChild(music);
         continue;
+      }
+      var spMatch = SPEAKER_LINE_RE.exec(line);
+      if (spMatch) {
+        var sp = document.createElement('span');
+        sp.className = 'sub-speaker';
+        sp.textContent = spMatch[1];
+        el.appendChild(sp);
+        el.appendChild(document.createTextNode(spMatch[2]));
+        line = line.slice(spMatch[0].length);
       }
       var lastIndex = 0;
       var italicRest = false;

@@ -38,7 +38,43 @@ public struct VisionReader: TextReader {
     }
 
     public func readLines(_ image: CGImage, deep: Bool) throws -> Reading {
-        deep ? try Self.firstLines(of: image, using: { try recognize($0, fast: false) }) : try recognize(image, fast: false)
+        let initial = deep ? try Self.firstLines(of: image, using: { try recognize($0, fast: false) }) : try recognize(image, fast: false)
+        // Bulanık / düşük kontrastlı karede ("surmnewnere... Tuck him") düşük güvenli ya da bozuk okuma dönerse
+        // kontrast + keskinleştirme uygulanmış tek bir GPU turuyla daha temiz okumayı seç.
+        if !initial.lines.isEmpty, Self.shouldRetryEnhanced(initial) {
+            let enhanced = Self.enhanceSubtitleCrop(image)
+            if let retried = try? recognize(enhanced, fast: false),
+               !retried.lines.isEmpty,
+               Self.isBetter(retried, than: initial) {
+                return retried
+            }
+        }
+        return initial
+    }
+
+    static func shouldRetryEnhanced(_ reading: Reading) -> Bool {
+        if let conf = reading.confidence, conf < 0.78 { return true }
+        return Rereads.looksMisread(reading.text)
+    }
+
+    static func isBetter(_ candidate: Reading, than original: Reading) -> Bool {
+        let candScore = Rereads.score(candidate.text)
+        let origScore = Rereads.score(original.text)
+        if candScore != origScore { return candScore > origScore }
+        return (candidate.confidence ?? 0) > (original.confidence ?? 0) + 0.04
+    }
+
+    /// Ana altyazı bölgesi için hafif kontrast + keskinlik (parlak oyun zemini üstündeki ince beyaz harfleri ayırır).
+    public static func enhanceSubtitleCrop(_ image: CGImage) -> CGImage {
+        let input = CIImage(cgImage: image)
+        let contrasted = input.applyingFilter("CIColorControls", parameters: [
+            kCIInputContrastKey: 1.22,
+            kCIInputSaturationKey: 0.85,
+        ])
+        let sharpened = contrasted.applyingFilter("CISharpenLuminance", parameters: [
+            kCIInputSharpnessKey: 0.55,
+        ])
+        return ciContext.createCGImage(sharpened, from: sharpened.extent) ?? image
     }
 
     public func readLines(_ image: CGImage, deep: Bool, fast: Bool) throws -> Reading {

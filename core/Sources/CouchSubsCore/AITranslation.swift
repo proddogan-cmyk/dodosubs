@@ -275,15 +275,15 @@ public enum AIRequest {
     public static let screenOutputTokens = 8192
 
     public static let systemPrompt = """
-        You translate English video game subtitles into natural, vivid spoken Turkish, the way real people talk in movies and games. \
-        Avoid stiff or literal phrasing; adapt idioms, slang and humor naturally while keeping subtitles concise and easy to read quickly. \
-        Characters address each other informally (use "sen", not "siz") unless the line is clearly formal, and keep the same "sen"/"siz" register consistent with the previous subtitles in the scene. \
+        You are an elite AAA video game localization writer translating English subtitles into natural, punchy, cinematic spoken Turkish — the quality of an official studio localization. \
+        Avoid stiff, robotic, or literal phrasing ("translate-ese"); adapt idioms, street slang, sarcasm, and humor naturally while keeping subtitles crisp and effortless to read at a glance. \
+        Characters address each other informally ("sen", not "siz") unless the relationship is clearly formal, and strictly maintain the same "sen"/"siz" register, character voice, and terminology established in the previous subtitles. \
         Keep character names, place names, speaker labels such as "ATREUS:", and cue markers like [Radio], (whispering), *sfx* or ♪ intact. \
-        Keep line breaks. Keep the meaning and tone; do not add or leave out anything. \
+        Keep line breaks. Preserve the exact meaning, attitude, and emotional intensity; do not add or omit anything. \
         The text is read from the screen by OCR and may have misread or missing letters ("Y u ave to ask?", \
-        "Doesn't 00k good."); translate the line the speaker clearly meant. \
+        "Doesn't 00k good.", "surmnewnere... Tuck him"); silently infer and translate the exact line the speaker clearly meant. \
         A subtitle may continue the previous one (it starts in lowercase or with a word like "and"); \
-        translate it so that it reads as that continuation. \
+        translate it so that it flows seamlessly as that continuation. \
         Reply with only the translation, no explanations, notes or quotes.
         """
 
@@ -582,8 +582,8 @@ public enum AIRequest {
 /// Bir altyazının çevrilmemiş bütün cümleleri tek istekte gider. Ücretsiz katmanın dakikalık sınırı için model listesindeki
 /// `requestsPerMinute` kadar istek hakkı vardır; hak bitince o satır sessizce (hata göstermeden) yerel çeviriyle çevrilir.
 public final class AITranslationCore: @unchecked Sendable {
-    /// Bağlama giden önceki satır sayısı.
-    public static let contextLines = 3
+    /// Bağlama giden önceki satır sayısı (sahne içi karakter tonu, sen/siz tutarlılığı ve argo devamlılığı için 6 satır).
+    public static let contextLines = 6
     /// Hata sonrası bu süre hizmet denenmez (bulut hizmetlerinin kotası için).
     public static let retryAfter: TimeInterval = 60
     /// Yerel modelde hata sonrası bekleme. Kota yoktur, sunucu çoğunlukla hemen düzelir (zaman aşımı, bozuk JSON, an
@@ -667,10 +667,12 @@ public final class AITranslationCore: @unchecked Sendable {
     /// "Bağlantıyı dene"de yerel model için beklenen süre: ilk istek modeli belleğe yükler, uzun sürebilir.
     public static let localTestTimeout: TimeInterval = 90
 
-    /// Kısa zaman aşımı: altyazı birkaç saniye ekranda kalır, geç gelen çeviri işe yaramaz.
+    /// Kısa zaman aşımı ve kalıcı HTTP/2 bağlantı havuzu: altyazı birkaç saniye ekranda kalır, geç gelen çeviri işe yaramaz.
     public static func makeSession(timeout: TimeInterval = AITranslationCore.timeout) -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
+        configuration.httpMaximumConnectionsPerHost = 4
+        configuration.waitsForConnectivity = false
         return URLSession(configuration: configuration)
     }
 
@@ -681,6 +683,28 @@ public final class AITranslationCore: @unchecked Sendable {
 
     /// Hattın ayırdığı konuşan adı; istemde adıyla söylenir.
     public func noteSpeaker(_ name: String) { names.learn(name: name) }
+
+    /// Oyun paketinden gösterilen satırı sahne bağlamına ekler: sonraki satır yapay zekâya gittiğinde karakter adları,
+    /// sen/siz hitabı ve konuşma akışı paketteki satırlarla kesintisiz devam eder.
+    public func recordContext(source: String, translation: String) {
+        let src = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tr = translation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !src.isEmpty, !tr.isEmpty else { return }
+        if let prefix = SpeakerPrefix.split(src) { names.learn(name: prefix.name) }
+        let game = self.game?()?.trimmingCharacters(in: .whitespacesAndNewlines)
+        lock.withLock {
+            if recentGame != game {
+                recent.removeAll(keepingCapacity: true)
+                recentGame = game
+            }
+            if recent.last?.source == src {
+                recent[recent.count - 1].translation = tr
+            } else {
+                recent.append(AIContextLine(source: src, translation: tr))
+                if recent.count > Self.contextLines { recent.removeFirst() }
+            }
+        }
+    }
 
     public func translate(_ text: String, fallback: (String) async throws -> String) async throws -> String {
         // Arama, HTTP isteği ve kayıt aynı oyunla yapılmalı; callback işlem sırasında değişebilir.

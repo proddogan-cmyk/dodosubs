@@ -426,6 +426,7 @@ public final class TVKeeper: @unchecked Sendable {
     private var lastKeepAwake: ContinuousClock.Instant?
     private var lastForegroundApp: String?
     private var lastHDMIPort: Int?
+    private let onHDMIPortDetected: (@Sendable (Int) -> Void)?
 
     /// `appConnected` verilirse (Samsung) TV'ye yalnız TV uygulaması bilgisayara bağlı değilken ve en çok
     /// `relaunchInterval`'da bir dokunulur: uygulama açılır, bağlantı hemen kapatılır. Samsung önplandaki uygulamayı
@@ -433,13 +434,16 @@ public final class TVKeeper: @unchecked Sendable {
     /// bağlantı TV'de "uzaktan kumanda bağlandı" bildirimi çıkarıyor, PS5 kolunu düşürüyordu (#5).
     public init(connect: @escaping () async throws -> TVControlling, appId: String, params: [String: Any],
                 appConnected: (@Sendable () -> Bool)? = nil, relaunchInterval: Duration = .seconds(30),
-                keepAwakeInterval: Duration = .seconds(45)) {
+                keepAwakeInterval: Duration = .seconds(45), initialHDMIPort: Int? = nil,
+                onHDMIPortDetected: (@Sendable (Int) -> Void)? = nil) {
         self.connect = connect
         self.appId = appId
         self.params = params
         self.appConnected = appConnected
         self.relaunchInterval = relaunchInterval
         self.keepAwakeInterval = keepAwakeInterval
+        self.lastHDMIPort = initialHDMIPort.flatMap { (1...4).contains($0) ? $0 : nil }
+        self.onHDMIPortDetected = onHDMIPortDetected
     }
 
     /// Kullanıcının bilerek açtığı uygulamalara (Netflix vb.) dokunulmaz; yalnız giriş ve yayın ekranları.
@@ -492,8 +496,9 @@ public final class TVKeeper: @unchecked Sendable {
                 lastForegroundApp = current
                 SubtitleLog.write("LG TV önplan uygulaması: \(current.isEmpty ? "(boş)" : current)")
             }
-            if let port = Self.hdmiPort(from: current) {
+            if let port = Self.hdmiPort(from: current), port != lastHDMIPort {
                 lastHDMIPort = port
+                onHDMIPortDetected?(port)
             }
             if Self.isScreensaver(current) {
                 SubtitleLog.write("LG TV ekran koruyucu algılandı (\(current)) — uygulama öne getiriliyor")

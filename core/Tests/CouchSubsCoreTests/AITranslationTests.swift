@@ -712,16 +712,26 @@ final class AITranslationTests: XCTestCase {
         XCTAssertGreaterThan(AITranslationCore.localTestTimeout, AITranslationCore.localTimeout)
     }
 
-    /// Son gösterilen 3 satır ve çevirileri bağlam olarak gider; satırın kendisi ve tekrar okunan satır girmez.
+    /// Son gösterilen 6 satır ve çevirileri bağlam olarak gider; satırın kendisi ve tekrar okunan satır girmez.
     func testContextIsTheLastThreeShownLinesWithTranslations() async throws {
         let translator = make(.claude)
-        for line in ["One.", "Two.", "Two.", "Three.", "Four.", "Five."] { _ = try await translator.translate(line, fallback: local) }
-        XCTAssertEqual(FakeAI.requests.count, 5)
+        for line in ["One.", "Two.", "Two.", "Three.", "Four.", "Five.", "Six.", "Seven.", "Eight."] {
+            _ = try await translator.translate(line, fallback: local)
+        }
+        XCTAssertEqual(FakeAI.requests.count, 8)
         XCTAssertFalse(user(0).contains("Previous subtitles"))
         XCTAssertTrue(user(1).contains("English: One.\nTurkish: [tr] One."))
-        XCTAssertTrue(user(4).contains("English: Two.\nTurkish: [tr] Two.\nEnglish: Three.\nTurkish: [tr] Three.\nEnglish: Four.\nTurkish: [tr] Four."))
-        XCTAssertFalse(user(4).contains("English: One."))
-        XCTAssertFalse(user(4).contains("English: Five."))
+        XCTAssertTrue(user(7).contains("English: Two.\nTurkish: [tr] Two."))
+        XCTAssertTrue(user(7).contains("English: Seven.\nTurkish: [tr] Seven."))
+        XCTAssertFalse(user(7).contains("English: One."))
+        XCTAssertFalse(user(7).contains("English: Eight."))
+    }
+
+    func testPackContextFeedsIntoAIMemory() async throws {
+        let translator = make(.claude)
+        translator.recordContext(source: "LUCIA: Stay sharp, Jason.", translation: "LUCIA: Gözünü dört aç, Jason.")
+        _ = try await translator.translate("Right behind you.", fallback: local)
+        XCTAssertTrue(user(0).contains("English: LUCIA: Stay sharp, Jason.\nTurkish: LUCIA: Gözünü dört aç, Jason."))
     }
 
     func testContextDoesNotCrossGameChanges() async throws {

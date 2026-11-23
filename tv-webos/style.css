@@ -658,7 +658,12 @@ html, body {
   will-change: transform, opacity;
 }
 
-/* Zengin sinema biçimlendirmesi: [Radyo], (Fısıldayarak), *Siren*, telsiz/iç ses ve ♪ şarkı sözleri ♪ */
+/* Zengin sinema biçimlendirmesi: konuşmacı vurgusu, [Radyo], (Fısıldayarak), *Siren*, telsiz/iç ses ve ♪ şarkı sözleri ♪ */
+.sub-speaker {
+  font-weight: 700;
+  color: #FCD34D;
+  letter-spacing: 0.025em;
+}
 .sub-sfx {
   font-style: italic;
   color: rgba(226, 232, 240, 0.86);

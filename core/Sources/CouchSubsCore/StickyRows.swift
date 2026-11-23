@@ -14,6 +14,8 @@ import Foundation
 public struct StickyRows {
     /// Satır bu kadar ekranda kalmadan sabit sayılmaz.
     public static let stickyMs = 6000
+    /// Nokta (`.`) ile biten tam cümlelerin sabit sayılması için daha uzun eşik (gerçek diyalog yutulmasın).
+    public static let sentenceStickyMs = 10_000
     /// Yanındaki satırın en az bu kadar sonra gelmiş olması gerekir (birlikte beliren satırlar konuşmadır).
     public static let youngerByMs = 3000
     /// Bu kadar okunmayan satır ekrandan kalkmış sayılır (birkaç karelik okuma kaçağı satırı unutturmaz).
@@ -21,9 +23,25 @@ public struct StickyRows {
 
     private struct Row {
         var text: String
+        var raw: String
         var since: Int
         var lastSeen: Int
         var sticky = false
+    }
+
+    /// Konuşma/sohbet satırı olduğu bariz olan satırlar (soru/ünlem/üç nokta, konuşan etiketi, küçük harfle başlayan
+    /// devam ya da günlük sohbet) görev/HUD yazısı sayılmaz.
+    static func looksLikeDialogue(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if SpeakerPrefix.split(trimmed) != nil { return true }
+        if let first = trimmed.first, first.isLowercase || first == "\"" || first == "“" || first == "-" || first == "—" {
+            return true
+        }
+        if trimmed.hasSuffix("?") || trimmed.hasSuffix("!") || trimmed.hasSuffix("...") || trimmed.hasSuffix("…") {
+            return true
+        }
+        return false
     }
 
     private var rows: [Row] = []
@@ -42,16 +60,22 @@ public struct StickyRows {
             guard text.count >= 3 else { matched.append(nil); continue }
             if let index = rows.indices.first(where: { !used.contains($0) && TextMatch.isSimilar(text, rows[$0].text) }) {
                 rows[index].lastSeen = time
+                rows[index].raw = line.text
                 used.insert(index)
                 matched.append(index)
             } else {
-                rows.append(Row(text: text, since: time, lastSeen: time))
+                rows.append(Row(text: text, raw: line.text, since: time, lastSeen: time))
                 used.insert(rows.count - 1)
                 matched.append(rows.count - 1)
             }
         }
         let present = matched.compactMap { $0 }
-        for index in present where !rows[index].sticky && time - rows[index].since >= Self.stickyMs {
+        for index in present where !rows[index].sticky {
+            let raw = rows[index].raw
+            if Self.looksLikeDialogue(raw) { continue }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let requiredMs = trimmed.hasSuffix(".") ? Self.sentenceStickyMs : Self.stickyMs
+            guard time - rows[index].since >= requiredMs else { continue }
             let since = rows[index].since
             if present.contains(where: { rows[$0].since - since >= Self.youngerByMs }) {
                 rows[index].sticky = true

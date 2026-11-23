@@ -38,6 +38,10 @@ public final class AITranslator: TextTranslator, OnlineTranslating {
         fallback.noteSpeaker(name)
     }
 
+    public func recordContext(source: String, translation: String) {
+        core.recordContext(source: source, translation: translation)
+    }
+
     /// Yalnız yerel yedeği hazırlar; AI isteği, dakika kotası veya konuşma bağlamı oluşturmaz.
     public func warmUp() async {
         await fallback.warmUp()

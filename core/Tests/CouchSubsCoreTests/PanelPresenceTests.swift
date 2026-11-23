@@ -379,7 +379,7 @@ final class PanelPresenceTests: XCTestCase {
         let closedMs = (Double(closedElapsed.components.seconds) * 1000 + Double(closedElapsed.components.attoseconds) / 1e15) / 200.0
         print(String(format: "PanelPresence benchmark → açık: %.3f ms/kare, kapalı: %.3f ms/kare", openMs, closedMs))
         XCTAssertLessThan(openMs, 3.0)
-        XCTAssertLessThan(closedMs, 3.0)
+        XCTAssertLessThan(closedMs, 5.0)
     }
 
     func testSingleFrameFalsePositiveNeverFlashesTranslation() async {

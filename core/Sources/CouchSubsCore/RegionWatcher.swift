@@ -216,6 +216,16 @@ public final class RegionWatcher {
     /// Bir tur sürüyor mu.
     public var isBusy: Bool { running != nil }
 
+    /// Şu an ekranda görünür durumda olan `onlyWhenVisible` (telefon/panel) alanlarının ekran kutuları (0–1).
+    /// Ana altyazı hattı bu kutuların içine düşen satırları eleyerek telefon → altyazı sızıntısını önler.
+    public func activePanelBoxes(for areas: [ExtraArea]) -> [TextBox] {
+        areas.compactMap { area in
+            guard area.onlyWhenVisible, states[area.id]?.panelVisible == true else { return nil }
+            let r = area.region
+            return TextBox(left: r.left, top: r.top, right: r.right, bottom: r.bottom)
+        }
+    }
+
     /// Her karede çağrılır; tur zamanı geldiyse ve önceki tur bittiyse turu arka planda başlatır, hemen döner.
     /// `onlyWhenVisible` açık (telefon/panel) alanlar `fastIntervalMs` (250 ms), normal alanlar `intervalMs` (1000 ms)
     /// aralıkla kontrol edilir.
@@ -471,7 +481,7 @@ public final class RegionWatcher {
             return
         }
         var candidate = area.onlyWhenVisible
-            ? Self.phoneCandidate(reading, in: ocrRegion, frame: ocrCrop, activeSubtitle: activeSourceSubtitle)
+            ? Self.phoneCandidate(reading, in: ocrRegion, frame: ocrCrop, activeSubtitle: activeSourceSubtitle, skipsTurkish: skipsTurkish)
             : Self.candidate(reading, in: ocrRegion, frame: ocrCrop)
 
         // Çift-hızlı hibrit OCR: `.fast` (~20 ms, CoreImage yükü olmadan) okumasında tüm satırlar oyun paketinden veya
@@ -488,7 +498,7 @@ public final class RegionWatcher {
                 }).value {
                     guard session == self.session else { return }
                     reading = accurate
-                    candidate = Self.phoneCandidate(reading, in: ocrRegion, frame: ocrCrop, activeSubtitle: activeSourceSubtitle)
+                    candidate = Self.phoneCandidate(reading, in: ocrRegion, frame: ocrCrop, activeSubtitle: activeSourceSubtitle, skipsTurkish: skipsTurkish)
                 }
             }
         }
@@ -528,10 +538,14 @@ public final class RegionWatcher {
     /// - Her mesajı ayrı blok ve gönderen başlığı (`sender`) olarak ayırır; böylece her mesaj `paket` içinde
     ///   tek başına 0 ms'de eşleşir ve TV'de ayrı buzlu cam konuşma balonu olarak görünür.
     static func phoneCandidate(_ reading: Reading, in region: CropRegion, frame: CGImage? = nil,
-                               activeSubtitle: String? = nil) -> Candidate {
+                               activeSubtitle: String? = nil, skipsTurkish: Bool = true) -> Candidate {
         let rawLines = reading.withButtonIcons().withoutButtonPrompts().withoutOcrNoise().lines
             .filter { ScreenTranslation.isWords($0.text) || PhoneContent.extractTimeString($0.text) != nil }
             .sorted { ($0.box?.top ?? 0) < ($1.box?.top ?? 0) }
+        if SystemOverlayFilter.isSystemOverlay(rawLines.map(\.text)) {
+            return Candidate(paragraphs: [], box: nil, lineHeight: nil, key: "", icons: nil, blocks: nil,
+                             senders: nil, phoneLayout: .quiet, phoneHeader: nil)
+        }
         let parsed = PhoneContent.parse(rawLines: rawLines, in: region, activeSubtitle: activeSubtitle)
         let messages = parsed.messages
         guard parsed.layout != .quiet, !messages.isEmpty else {
@@ -539,6 +553,11 @@ public final class RegionWatcher {
                              senders: nil, phoneLayout: .quiet, phoneHeader: parsed.header)
         }
         let paragraphs = messages.map(\.body)
+        if SystemOverlayFilter.isSystemOverlay(paragraphs)
+            || (skipsTurkish && paragraphs.allSatisfy { TurkishText.isSure($0) }) {
+            return Candidate(paragraphs: [], box: nil, lineHeight: nil, key: "", icons: nil, blocks: nil,
+                             senders: nil, phoneLayout: .quiet, phoneHeader: nil)
+        }
         let senders = messages.map(\.sender)
         let box = messages.map(\.box).dropFirst().reduce(messages.first?.box) { $0?.union($1) }
         let heights = messages.map(\.lineHeight).sorted()

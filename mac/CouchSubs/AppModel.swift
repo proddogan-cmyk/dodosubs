@@ -280,7 +280,11 @@ final class LiveServices: AppServices {
             }
             return client
         }, search: { await LGDiscovery.search() }, onMoved: onMoved)
-        return TVKeeper(connect: { try await locator.connect() }, appId: AppIdentity.tvAppId, params: params)
+        let hdmiKey = "tvHDMIPort.\(tv.host)"
+        let savedHDMI = UserDefaults.standard.integer(forKey: hdmiKey)
+        return TVKeeper(connect: { try await locator.connect() }, appId: AppIdentity.tvAppId, params: params,
+                        initialHDMIPort: (1...4).contains(savedHDMI) ? savedHDMI : nil,
+                        onHDMIPortDetected: { port in UserDefaults.standard.set(port, forKey: hdmiKey) })
     }
 
     // MARK: - TV uygulamasını kurma
@@ -2089,6 +2093,7 @@ final class AppModel: ObservableObject {
         if regionWatcher == nil, !areas.isEmpty, let pipeline { regionWatcher = makeRegionWatcher(packLookup: pipeline.packLookup) }
         regionWatcher?.activeSourceSubtitle = pipeline?.currentSourceSubtitle
         regionWatcher?.offer(frame, areas: areas)
+        pipeline?.excludedScreenBoxes = regionWatcher?.activePanelBoxes(for: areas) ?? []
         // Önceki kare hâlâ işleniyorsa bu kare atlanır; okuma kareleri biriktirmez.
         var entry = frameGate.enter(now: SubtitleStabilizer.uptimeMs())
         if case .stuck(let ms) = entry {

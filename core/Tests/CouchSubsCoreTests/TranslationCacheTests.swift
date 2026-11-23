@@ -113,4 +113,12 @@ final class TranslationCacheTests: XCTestCase {
         XCTAssertTrue(a === b)
         XCTAssertFalse(a === c)
     }
+
+    func testNormalizedLookupAvoidsRedundantCallsOnPunctuationDiff() {
+        let cache = TranslationCache(file: file())
+        cache.store("Hemen geliyorum.", for: "gta-6\u{001f}Hold on, I'll be right there.")
+        XCTAssertEqual(cache.value(for: "gta-6\u{001f}Hold on I'll be right there"), "Hemen geliyorum.")
+        XCTAssertEqual(cache.value(for: "gta-6\u{001f}HOLD ON, I'LL BE RIGHT THERE!"), "Hemen geliyorum.")
+        XCTAssertNil(cache.value(for: "other-game\u{001f}Hold on I'll be right there"), "Farklı oyun önbelleği karışmamalı")
+    }
 }

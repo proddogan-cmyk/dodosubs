@@ -44,6 +44,24 @@ final class StickyRowsTests: XCTestCase {
         _ = rows.filter(Reading.empty, at: 9000)
         XCTAssertEqual(rows.filter(Reading(text: objective), at: 9500).text, objective)
     }
+
+    func testDialogueAndSystemOverlayProtection() {
+        var rows = StickyRows()
+        _ = rows.filter(Reading(text: "girl how you doinnnn?"), at: 0)
+        _ = rows.filter(Reading(text: "girl how you doinnnn?\nSomewhere else"), at: 3500)
+        let kept = rows.filter(Reading(text: "girl how you doinnnn?\nSomewhere else"), at: 8000)
+        XCTAssertTrue(kept.text.contains("girl how you doinnnn?"), "Konuşma satırı HUD sayılmamalı")
+
+        var periodRows = StickyRows()
+        _ = periodRows.filter(Reading(text: "And his wrinkly ass."), at: 0)
+        _ = periodRows.filter(Reading(text: "And his wrinkly ass.\nNext line"), at: 3500)
+        let keptPeriod = periodRows.filter(Reading(text: "And his wrinkly ass.\nNext line"), at: 7000)
+        XCTAssertTrue(keptPeriod.text.contains("And his wrinkly ass."), "Noktalı cümle 7 sn'de HUD sayılmamalı")
+
+        XCTAssertTrue(SystemOverlayFilter.isSystemOverlay("Dinlenme Moduna PS5 Sistemini Kapa"))
+        XCTAssertTrue(SystemOverlayFilter.isSystemOverlay("PS5 sistemini yeniden başlatın."))
+        XCTAssertFalse(SystemOverlayFilter.isSystemOverlay("Hey, you guys!"))
+    }
 }
 
 #if canImport(CoreGraphics)
