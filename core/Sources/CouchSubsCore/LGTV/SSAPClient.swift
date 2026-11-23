@@ -425,6 +425,7 @@ public final class TVKeeper: @unchecked Sendable {
     private var lastLaunch: ContinuousClock.Instant?
     private var lastKeepAwake: ContinuousClock.Instant?
     private var lastForegroundApp: String?
+    private var lastHDMIPort: Int?
 
     /// `appConnected` verilirse (Samsung) TV'ye yalnız TV uygulaması bilgisayara bağlı değilken ve en çok
     /// `relaunchInterval`'da bir dokunulur: uygulama açılır, bağlantı hemen kapatılır. Samsung önplandaki uygulamayı
@@ -446,6 +447,25 @@ public final class TVKeeper: @unchecked Sendable {
         appId.hasPrefix("com.webos.app.hdmi") || appId.hasPrefix("com.webos.app.externalinput") || appId == "com.webos.app.livetv"
     }
 
+    /// `com.webos.app.hdmi3` / `com.webos.app.externalinput.hdmi3` gibi önplan uygulama kimliklerinden HDMI port
+    /// numarasını (1–4) çıkarır. TV HDMI girişine geçip uygulama arka plana düştüğünde webOS eski `<video ext://hdmi>`
+    /// katmanını bozduğu için yeniden açarken `hdmi` parametresiyle göndermek TV uygulamasında HDMI akışını tazeletir.
+    static func hdmiPort(from appId: String) -> Int? {
+        let lower = appId.lowercased()
+        guard let range = lower.range(of: "hdmi", options: .backwards) else { return nil }
+        let suffix = lower[range.upperBound...]
+        guard let first = suffix.first, let port = Int(String(first)), (1...4).contains(port) else { return nil }
+        return port
+    }
+
+    private func launchParams(hdmi: Int? = nil) -> [String: Any] {
+        var merged = params
+        if let port = hdmi ?? lastHDMIPort, merged["hdmi"] == nil {
+            merged["hdmi"] = port
+        }
+        return merged
+    }
+
     /// LG webOS OLED ekran koruyucu ve Always Ready ekranları.
     static func isScreensaver(_ appId: String) -> Bool {
         let lower = appId.lowercased()
@@ -463,7 +483,7 @@ public final class TVKeeper: @unchecked Sendable {
                 let fresh = try await connect()
                 control = fresh
                 lastKeepAwake = nil
-                try await fresh.launch(appId: appId, params: params)
+                try await fresh.launch(appId: appId, params: launchParams())
                 return
             }
             guard let control else { return }
@@ -472,13 +492,20 @@ public final class TVKeeper: @unchecked Sendable {
                 lastForegroundApp = current
                 SubtitleLog.write("LG TV önplan uygulaması: \(current.isEmpty ? "(boş)" : current)")
             }
+            if let port = Self.hdmiPort(from: current) {
+                lastHDMIPort = port
+            }
             if Self.isScreensaver(current) {
                 SubtitleLog.write("LG TV ekran koruyucu algılandı (\(current)) — uygulama öne getiriliyor")
                 await control.keepScreenAwake()
-                try await control.launch(appId: appId, params: params)
+                try await control.launch(appId: appId, params: launchParams())
                 lastKeepAwake = .now
             } else if Self.isInputOrLiveTV(current) {
-                try await control.launch(appId: appId, params: params)
+                let port = Self.hdmiPort(from: current)
+                if let port {
+                    SubtitleLog.write("LG TV HDMI \(port) girişinden dönülüyor — HDMI \(port) yeniden bağlanacak")
+                }
+                try await control.launch(appId: appId, params: launchParams(hdmi: port))
             } else if current == appId {
                 if lastKeepAwake == nil || ContinuousClock.now - lastKeepAwake! >= keepAwakeInterval {
                     await control.keepScreenAwake()

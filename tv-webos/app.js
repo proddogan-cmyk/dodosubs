@@ -77,8 +77,15 @@
     return false;
   };
 
+  var lastHdmiMountAt = 0;
   document.addEventListener('visibilitychange', function () {
-    if (document.hidden) diag.backgrounded++;
+    if (document.hidden) {
+      diag.backgrounded++;
+    } else if (diag.backgrounded > 0 && Date.now() - lastHdmiMountAt > 1200) {
+      // webOS'ta HDMI girişine veya ekran koruyucuya geçilip geri dönüldüğünde eski <video ext://hdmi>
+      // donanım katmanı siyah ekranda kalabiliyor; önplana dönünce HDMI kaynağını tazele.
+      showHdmi(hdmiPort);
+    }
     renderDiag();
   });
 
@@ -126,6 +133,7 @@
   // --- HDMI görüntüsü ---
 
   function showHdmi(port) {
+    lastHdmiMountAt = Date.now();
     setStatus('st-hdmi', String(port));
     var statuses = {
       loading: ['loading', 'muted'],

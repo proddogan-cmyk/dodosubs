@@ -305,6 +305,7 @@ final class TVKeeperTests: XCTestCase {
     final class FakeControl: TVControlling, @unchecked Sendable {
         var foreground: [String]
         var launches: [(String, [String: String])] = []
+        var rawLaunches: [(String, [String: Any])] = []
         var failNext = false
         var closes = 0
         var keepAwakes = 0
@@ -317,6 +318,7 @@ final class TVKeeperTests: XCTestCase {
         }
         func launch(appId: String, params: [String: Any]) async throws {
             launches.append((appId, params.compactMapValues { $0 as? String }))
+            rawLaunches.append((appId, params))
         }
     }
 
@@ -403,6 +405,27 @@ final class TVKeeperTests: XCTestCase {
         await keeper.tick()                     // Always Ready → uyandır (awake #3) ve geri getir (launch #3)
         XCTAssertEqual(control.keepAwakes, 3)
         XCTAssertEqual(control.launches.count, 3)
+    }
+
+    func testPassesDetectedHdmiPortOnRelaunchToPreventBlackScreen() async throws {
+        XCTAssertEqual(TVKeeper.hdmiPort(from: "com.webos.app.hdmi3"), 3)
+        XCTAssertEqual(TVKeeper.hdmiPort(from: "com.webos.app.externalinput.hdmi2"), 2)
+        XCTAssertNil(TVKeeper.hdmiPort(from: "com.couchsubs.tv"))
+        XCTAssertNil(TVKeeper.hdmiPort(from: "com.webos.app.livetv"))
+
+        let control = FakeControl(foreground: [
+            "com.webos.app.hdmi3",
+            "com.webos.app.screensaver",
+        ])
+        let keeper = TVKeeper(connect: { control }, appId: "com.couchsubs.tv", params: ["server": "http://1.2.3.4:8787"])
+        await keeper.tick()                     // ilk açılış
+        await keeper.tick()                     // HDMI 3'ten dönüş → hdmi=3 gönderir
+        XCTAssertEqual(control.rawLaunches.count, 2)
+        XCTAssertEqual(control.rawLaunches[1].1["hdmi"] as? Int, 3)
+
+        await keeper.tick()                     // ekran koruyucudan dönüş → bilinen hdmi=3 korunur
+        XCTAssertEqual(control.rawLaunches.count, 3)
+        XCTAssertEqual(control.rawLaunches[2].1["hdmi"] as? Int, 3)
     }
 }
 
