@@ -17,6 +17,7 @@ public enum TurkishText {
         "daha", "sonra", "simdi", "degil", "haydi", "tamam", "evet", "hayir", "devam", "iptal", "giris", "guncelle",
         "guncellemesi", "yazilimi", "kurulum", "sirasinda", "sisteminizi", "sistemindeki", "kapatmayin", "baglanti",
         "baglantinizi", "uzaktan", "oynama", "dosyasi", "gostergesi", "kablosunu", "bir",
+        "depolama", "kaydedilen", "veriler", "verileri", "kontrol", "ediliyor", "sec", "haberler",
     ].map { PoolFilter.fold($0).joined() }
 
     private static let known = PoolFilter.turkishWords + commonWords

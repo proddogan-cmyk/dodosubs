@@ -29,8 +29,8 @@ public struct StickyRows {
         var sticky = false
     }
 
-    /// Konuşma/sohbet satırı olduğu bariz olan satırlar (soru/ünlem/üç nokta, konuşan etiketi, küçük harfle başlayan
-    /// devam ya da günlük sohbet) görev/HUD yazısı sayılmaz.
+    /// Konuşma/sohbet satırı olduğu bariz olan satırlar (soru/ünlem/üç nokta/virgül, konuşan etiketi, küçük harfle
+    /// başlayan devam, birinci/ikinci şahıs zamirleri veya çok cümleli replikler) görev/HUD yazısı sayılmaz.
     static func looksLikeDialogue(_ raw: String) -> Bool {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -38,9 +38,15 @@ public struct StickyRows {
         if let first = trimmed.first, first.isLowercase || first == "\"" || first == "“" || first == "-" || first == "—" {
             return true
         }
-        if trimmed.hasSuffix("?") || trimmed.hasSuffix("!") || trimmed.hasSuffix("...") || trimmed.hasSuffix("…") {
+        if trimmed.hasSuffix("?") || trimmed.hasSuffix("!") || trimmed.hasSuffix("...") || trimmed.hasSuffix("…") || trimmed.hasSuffix(",") {
             return true
         }
+        // Virgül veya satır içi cümle ayrımı ("You comfortable where you at. I see that.") görev başlığı değil diyalogdur.
+        if trimmed.contains(",") || trimmed.contains(". ") { return true }
+        let lowered = " " + trimmed.lowercased() + " "
+        let dialogueMarkers = [" i ", " i'm ", " i've ", " i'll ", " i'd ", " you ", " you're ", " we ", " we're ",
+                               " don't ", " ain't ", " gon' ", " tryin' ", " y'all "]
+        if dialogueMarkers.contains(where: { lowered.contains($0) }) { return true }
         return false
     }
 

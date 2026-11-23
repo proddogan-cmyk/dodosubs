@@ -438,19 +438,44 @@ public final class SubtitlePipeline {
         return iw > 0 && ih > 0
     }
 
-    /// Aktif telefon/panel kutularının içine düşen OCR satırlarını ana altyazı okumasından ayıklar.
+    /// Aktif telefon/panel kutularının içine düşen (veya %4 kenar payıyla belirgin kesişen) OCR satırlarını
+    /// ana altyazı okumasından ayıklar.
     static func excluding(_ boxes: [TextBox], from reading: Reading, in place: TextBox) -> Reading {
         guard !boxes.isEmpty, !reading.lines.isEmpty else { return reading }
+        let margin = 0.04
         let kept = reading.lines.filter { line in
             guard let local = line.box else { return true }
             let screen = local.placed(in: place)
-            let cx = (screen.left + screen.right) * 0.5
-            let cy = (screen.top + screen.bottom) * 0.5
+            let lineArea = max(1e-6, (screen.right - screen.left) * (screen.bottom - screen.top))
             return !boxes.contains { box in
-                cx >= box.left && cx <= box.right && cy >= box.top && cy <= box.bottom
+                let left = box.left - margin, right = box.right + margin
+                let top = box.top - margin, bottom = box.bottom + margin
+                let iw = max(0, min(screen.right, right) - max(screen.left, left))
+                let ih = max(0, min(screen.bottom, bottom) - max(screen.top, top))
+                return (iw * ih) / lineArea >= 0.30
             }
         }
         return kept.count == reading.lines.count ? reading : Reading(lines: kept)
+    }
+
+    /// Tek sözcüklü 3+ ardışık aynı harfli OCR gürültüsü ("duuu", "quuu") — pakette yoksa LLM'e gitmesin.
+    static func isRepeatedCharNoise(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains(where: \.isWhitespace), trimmed.count <= 6 else { return false }
+        let letters = trimmed.lowercased().filter(\.isLetter)
+        guard letters.count >= 3 else { return false }
+        var run = 1
+        var prev: Character?
+        for ch in letters {
+            if ch == prev {
+                run += 1
+                if run >= 3 { return true }
+            } else {
+                run = 1
+                prev = ch
+            }
+        }
+        return false
     }
 
     // Paket eşleşmesi tek başına eksik parçayı yeni replik yapmaz. Tam kısa cümleler korunur.
@@ -484,6 +509,11 @@ public final class SubtitlePipeline {
         if SystemOverlayFilter.isSystemOverlay(source) {
             remember(request.number, source, nil)
             log(request, "\(SubtitleLog.excerpt(source)) → konsol sistem menüsü, çevrilmedi")
+            return
+        }
+        if Self.isRepeatedCharNoise(source) {
+            remember(request.number, source, nil)
+            log(request, "\(SubtitleLog.excerpt(source)) → kısa tekrarlı OCR gürültüsü, çevrilmedi")
             return
         }
         // Hiç harfi olmayan okuma (hız göstergesi "20 40 60 80", plaka, sayaç "1 / 3") çevrilecek yazı değildir;

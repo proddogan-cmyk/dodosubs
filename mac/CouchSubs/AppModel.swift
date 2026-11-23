@@ -1728,7 +1728,22 @@ final class AppModel: ObservableObject {
         watcher.packLookup = packLookup
         watcher.skipsTurkish = settings.targetLanguage == "tr"
         watcher.onLog = { SubtitleLog.write($0) }
+        watcher.phoneVision = makePhoneVision()
         return watcher
+    }
+
+    /// Bulut yapay zekâ motoru (Claude / Gemini / OpenAI) etkinse oyun içi telefon için doğrudan çok-kipli Vision
+    /// motorunu kurar: klasik OCR yerine kırpılmış telefon görüntüsünü tek hamlede görerek çevirir.
+    private func makePhoneVision() -> PhoneVisionReading? {
+        guard !demoMode, onlineTranslationActive,
+              let storeKey = settings.onlineEngine.storeKey,
+              let provider = settings.onlineEngine.aiProvider, !provider.isLocal,
+              let key = store.load(String.self, for: storeKey), !key.isEmpty else { return nil }
+        let model = provider.model(settings.model(for: provider)).id
+        let sense = gameChoice.sense
+        return PhoneVisionTranslator(provider: provider, key: key, model: model,
+                                     game: { sense.current?.name },
+                                     instruction: settings.aiInstruction)
     }
 
     private func refreshTranslatorStatus() async {

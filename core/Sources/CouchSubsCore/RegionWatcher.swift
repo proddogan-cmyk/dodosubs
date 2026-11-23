@@ -113,6 +113,13 @@ public final class RegionWatcher {
         var lastPhoneHeader: PhoneContent.Header?
         /// Telefon açıkken kaydırma (scroll) boyunca görülen mesajların kimlik ve çeviri belleği.
         var recentThread: [ThreadMemory] = []
+        /// Doğrudan Vision analizi için algısal ekran önbelleği (geri kaydırmada 0 ms, 0 API çağrısı).
+        var visionCache: [(sig: [UInt8], result: PhoneVisionResult)] = []
+        /// Son bulut Vision çağrısının zamanı (ms; hızlı kaydırmada gereksiz çağrıyı önler).
+        var lastVisionCallAt: Int = Int.min
+        /// Ardışık Vision hataları (2 hata → 30 sn yerel OCR yedeğine geçer).
+        var visionConsecutiveErrors = 0
+        var visionPausedUntil: Int = Int.min
         /// Bu alanın en son ne zaman kontrol edildiği (ms).
         var lastVisit: Int?
     }
@@ -177,6 +184,10 @@ public final class RegionWatcher {
 
     /// Oyun paketi: satırın hazır Türkçesi (ana altyazıyla aynı arama).
     public var packLookup: ((String) -> PackMatch?)?
+    /// Doğrudan çok-kipli (Claude/Gemini/OpenAI Vision) telefon ekranı okuyucu ve çevirici.
+    /// Atanmışsa `onlyWhenVisible` (telefon) alanlarında klasik OCR yerine kırpılmış görüntüyü doğrudan görerek
+    /// tek hamlede baloncuk + gelen/giden + başlık + Türkçe çeviri üretir; hata olursa yerel OCR'a düşer.
+    public var phoneVision: PhoneVisionReading?
     /// Ekranda o an gösterilen ana İngilizce diyalog altyazısı; telefon alanına sızarsa otomatik ayıklanır.
     public var activeSourceSubtitle: String?
     /// Hedef dil Türkçe: yüksek güvenle Türkçe olan parça çevrilmez, aslı sayılır (#289).
@@ -451,6 +462,71 @@ public final class RegionWatcher {
         let checkInnerGate = area.onlyWhenVisible && useInner && !state.shown.isEmpty && !becameVisible && !settledNow && !visibilitySettingsChanged
         let prevInnerSig = state.innerSignature
 
+        // Doğrudan Çok-Kipli Telefon Vision yolu (Claude / Gemini / OpenAI Vision):
+        // Klasik OCR'ı tamamen atlayıp kırpılmış telefon görüntüsünü tek hamlede anlar ve Türkçeleştirir.
+        if area.onlyWhenVisible, let vision = self.phoneVision, started >= state.visionPausedUntil {
+            let (visionCrop, visionSig) = await Task.detached(priority: .utility) { () -> (CGImage, [UInt8]) in
+                let cropped = useInner ? RegionCropper.crop(frame, to: ocrRegion) : crop
+                return (cropped, RegionCropper.signature(of: cropped))
+            }.value
+            guard session == self.session else { return }
+            state.innerSignature = visionSig
+            // Telefon sabit dururken (el sallanması dahil küçük farklar) hiç API çağırma, TV'yi titretme!
+            if checkInnerGate, let prev = prevInnerSig, Self.meanDiff(prev, visionSig) <= 11.0 {
+                states[area.id] = state
+                return
+            }
+            // Algısal önbellek: kullanıcı geri kaydırıp az önce baktığı ekrana döndüyse 0 ms'de geri getir!
+            if let cached = state.visionCache.first(where: { Self.meanDiff($0.sig, visionSig) <= 9.0 }) {
+                applyVisionResult(cached.result, area: area, state: &state, elapsedMs: 0, fromCache: true)
+                states[area.id] = state
+                return
+            }
+            // Hızlı kaydırma koruması: iki bulut Vision çağrısı arasında en az 450 ms bekle.
+            if !becameVisible, !settledNow, state.lastVisionCallAt != Int.min, started - state.lastVisionCallAt < 450 {
+                states[area.id] = state
+                return
+            }
+            state.lastVisionCallAt = started
+            if state.shown.isEmpty, area.presentation == .sideBubble, !state.showingLoading {
+                let anchor = TextBox(left: area.region.left, top: area.region.top, right: area.region.right, bottom: area.region.bottom)
+                let opts = BubbleOptions(theme: area.bubbleTheme, scale: area.bubbleScale,
+                                         layout: state.lastPhoneLayout, loading: true, phoneHeader: state.lastPhoneHeader)
+                server.sendRegion(id: area.id, text: "", box: anchor, lineHeight: nil, icons: nil, blocks: nil,
+                                  presentation: .sideBubble, anchor: anchor, options: opts)
+                state.showingLoading = true
+            }
+            states[area.id] = state
+            let activeSub = self.activeSourceSubtitle
+            do {
+                let result = try await vision.analyzePhone(visionCrop, activeSubtitle: activeSub)
+                guard session == self.session, var fresh = states[area.id], fresh.panelVisible == true else { return }
+                let elapsed = max(0, now() - started)
+                fresh.visionConsecutiveErrors = 0
+                fresh.showingLoading = false
+                fresh.visionCache.removeAll { Self.meanDiff($0.sig, visionSig) <= 9.0 }
+                fresh.visionCache.insert((sig: visionSig, result: result), at: 0)
+                if fresh.visionCache.count > 24 { fresh.visionCache.removeLast(fresh.visionCache.count - 24) }
+                reads += 1
+                onReadMs?(elapsed)
+                applyVisionResult(result, area: area, state: &fresh, elapsedMs: elapsed, fromCache: false)
+                states[area.id] = fresh
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                guard session == self.session, var fresh = states[area.id] else { return }
+                fresh.visionConsecutiveErrors += 1
+                if fresh.visionConsecutiveErrors >= 2 {
+                    fresh.visionPausedUntil = now() + 30_000
+                    fresh.visionConsecutiveErrors = 0
+                }
+                states[area.id] = fresh
+                state = fresh
+                onLog?("ek alan \(area.name) [Vision] hata (\(error)) — yerel OCR yedeğine geçiliyor")
+            }
+        }
+
         let (ocrCrop, innerSig, innerUnchanged, firstReading) = await Task.detached(priority: .utility) { () -> (CGImage, [UInt8]?, Bool, Reading?) in
             let cropped = useInner ? RegionCropper.crop(frame, to: ocrRegion) : crop
             var computedInner: [UInt8]? = nil
@@ -573,6 +649,91 @@ public final class RegionWatcher {
                          phoneLayout: parsed.layout, phoneHeader: parsed.header)
     }
 
+    /// Doğrudan Multimodal Vision sonucunu TV İkiz Telefon formatına çevirip gönderir.
+    private func applyVisionResult(_ result: PhoneVisionResult, area: ExtraArea, state: inout State,
+                                   elapsedMs: Int, fromCache: Bool) {
+        let anchor = TextBox(left: area.region.left, top: area.region.top, right: area.region.right, bottom: area.region.bottom)
+        if result.screen == .quiet || result.messages.isEmpty {
+            if !state.shown.isEmpty || state.showingLoading {
+                clearVisibleState(&state, id: area.id, name: area.name)
+            }
+            if !fromCache {
+                onLog?("ek alan \(area.name) [Vision]: sessiz (\(elapsedMs) ms)")
+            }
+            return
+        }
+
+        let layout: PhoneContent.Layout = (result.screen == .card) ? .card : .chat
+        let rawHeader = PhoneContent.Header(
+            title: result.title ?? (result.screen == .inbox ? "Sohbetler" : nil),
+            subtitle: result.subtitle,
+            clock: result.clock,
+            accentColor: (result.title ?? result.messages.compactMap(\.sender).first).map(PhoneContent.colorHex(forSender:))
+        )
+        let mergedHeader = Self.mergeHeader(new: rawHeader.isEmpty ? nil : rawHeader, previous: state.lastPhoneHeader)
+
+        let count = result.messages.count
+        let regionH = max(0.05, area.region.bottom - area.region.top)
+        let slotH = regionH / Double(max(count, 1))
+        let estLineH = min(0.036, max(0.022, slotH * 0.28))
+
+        var items: [ScreenTranslation.Item] = []
+        var renderedBlocks: [(group: Int, item: ScreenTranslation.Item)] = []
+        var keyParts: [String] = [result.screen.rawValue]
+        for (idx, msg) in result.messages.enumerated() {
+            let top = area.region.top + Double(idx) * slotH
+            let bottom = min(area.region.bottom, top + slotH * 0.92)
+            let box = TextBox(left: area.region.left, top: top, right: area.region.right, bottom: bottom)
+            let stableId = PhoneContent.stableMessageId(side: msg.side, sender: msg.sender, body: msg.text)
+            let color = msg.sender.map(PhoneContent.colorHex(forSender:))
+            let item = ScreenTranslation.Item(
+                source: msg.text,
+                translation: msg.text,
+                box: box,
+                lineHeight: estLineH,
+                icons: nil,
+                sender: msg.sender,
+                senderColor: color,
+                msgId: stableId,
+                side: msg.side,
+                timestamp: msg.time,
+                dateLabel: msg.date
+            )
+            items.append(item)
+            renderedBlocks.append((idx, item))
+            keyParts.append("\(msg.side.rawValue):\(msg.sender ?? ""):\(TextMatch.normalize(msg.text))")
+        }
+
+        let visionKey = "v|" + keyParts.joined(separator: "|")
+        let fullText = result.messages.map(\.text).joined(separator: "\n")
+        if state.shown == visionKey && state.lastPhoneHeader == mergedHeader {
+            return
+        }
+
+        let opts = BubbleOptions(theme: area.bubbleTheme, scale: area.bubbleScale, layout: layout,
+                                 loading: false, phoneHeader: mergedHeader)
+        server.sendRegion(id: area.id, text: fullText, box: anchor, lineHeight: estLineH,
+                          icons: nil, blocks: items, presentation: area.presentation, anchor: anchor, options: opts)
+        state.shown = visionKey
+        state.shownAt = now()
+        state.holdUntil = nil
+        state.holdTask?.cancel()
+        state.holdTask = nil
+        state.showingLoading = false
+        state.renderedKey = visionKey
+        state.renderedText = fullText
+        state.renderedIcons = nil
+        state.renderedBox = anchor
+        state.renderedLineHeight = estLineH
+        state.renderedLayout = nil
+        state.renderedBlocks = renderedBlocks
+        state.lastPhoneLayout = layout
+        state.lastPhoneHeader = mergedHeader
+
+        let tag = fromCache ? "Vision önbellek" : "Vision · \(result.screen.rawValue), \(elapsedMs) ms"
+        onLog?("ek alan \(area.name) [\(tag)]: \(SubtitleLog.excerpt(fullText))")
+    }
+
     private static func meanDiff(_ a: [UInt8], _ b: [UInt8]) -> Double {
         guard a.count == b.count, !a.isEmpty else { return 0 }
         var sum = 0
@@ -640,7 +801,7 @@ public final class RegionWatcher {
         let headerChanged = area.onlyWhenVisible && candidate.phoneHeader != state.lastPhoneHeader
         let sameText = state.shown == candidate.key
             || (area.onlyWhenVisible && !state.shown.isEmpty && !candidate.key.isEmpty
-                && TextMatch.isSimilar(Self.plainKey(state.shown), Self.plainKey(candidate.key), threshold: 0.90))
+                && TextMatch.isSimilar(Self.plainKey(state.shown), Self.plainKey(candidate.key), threshold: 0.84))
         if sameText {
             guard let renderedText = state.renderedText, !renderedText.isEmpty else { return }
             // Telefon/yan balon modunda el sallanmasından gelen küçük (< %3.5) konum oynamalarını yok say
